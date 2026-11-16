@@ -55,8 +55,8 @@ def test_screenshot_matches_display(orch: Orchestrator) -> None:
 
 def test_capabilities_probed(orch: Orchestrator) -> None:
     caps = {c.capability: c for c in orch.capabilities(f"android:{SERIAL}")}
-    assert caps[Capability.SCREENSHOT].supported
-    assert "Phase 2" in (caps[Capability.OBSERVE_TREE].reason or "")
+    assert caps[Capability.SCREENSHOT].supported and caps[Capability.OBSERVE_TREE].supported
+    assert "Phase 3" in (caps[Capability.INSTALL_APP].reason or "")
 
 
 @pytest.fixture

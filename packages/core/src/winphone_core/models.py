@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
@@ -60,6 +61,26 @@ class CapabilityStatus(BaseModel):
     capability: Capability
     supported: bool
     reason: str | None = None
+
+
+PACKAGE_PATTERN = r"^[A-Za-z]\w*(\.[A-Za-z_]\w*)+$"  # an Android package name; never starts with '-'
+
+
+class Key(StrEnum):
+    BACK = "back"
+    HOME = "home"
+    RECENTS = "recents"
+    ENTER = "enter"
+
+
+@dataclass(frozen=True)
+class UiSnapshot:
+    """A raw UI-hierarchy dump plus what normalising it needs."""
+
+    xml: str
+    foreground_app: str | None
+    width: int
+    height: int
 
 
 class ScreenshotArtifact(BaseModel):

@@ -23,7 +23,7 @@ markers = ["android: needs a real Android phone (set WINPHONE_TEST_ANDROID=<seri
 filterwarnings = ["ignore:Using .httpx. with .starlette.testclient. is deprecated"]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -34,5 +34,5 @@ strict = true
 python_version = "3.12"
 
 [[tool.mypy.overrides]]
-module = ["adbutils", "adbutils.*"]
+module = ["adbutils", "adbutils.*", "uiautomator2", "uiautomator2.*"]
 ignore_missing_imports = true

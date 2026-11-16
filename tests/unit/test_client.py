@@ -37,6 +37,26 @@ def test_non_json_error_is_daemon_unavailable() -> None:
         client.devices()
 
 
+def test_observe_act_apps_round_trip(tmp_path: Path) -> None:
+    from fakes import FakeAdapter, dev, sender_for
+    from fastapi.testclient import TestClient
+    from winphone_core.actions import Action, Target, Wait
+    from winphone_core.artifacts import ArtifactStore
+    from winphone_core.observation import Selector
+    from winphone_core.orchestrator import Orchestrator
+    from winphone_core.server import create_app
+
+    app = create_app(Orchestrator([FakeAdapter([dev("A")])], ArtifactStore(tmp_path)), "t", 4557, lambda: None)
+    client = DaemonClient(sender_for(TestClient(app, base_url="http://127.0.0.1:4557",
+                                                headers={"Authorization": "Bearer t"})))
+    obs = client.observe("android:A")
+    assert obs.elements[-1].text == "Sign in"
+    r = client.act("android:A", Action(kind="tap", target=Target(selector=Selector(text="Sign in"))),
+                   wait=Wait(text_visible="Welcome", timeout_s=2), idempotency_key="k")
+    assert r.outcome == "verified" and r.resolved_by == "selector"
+    assert client.apps("android:A") == ["com.example"]
+
+
 def test_dropped_connection_is_daemon_unavailable() -> None:
     def send(method: str, path: str, payload: bytes | None) -> tuple[int, bytes]:
         raise ConnectionResetError("gone")

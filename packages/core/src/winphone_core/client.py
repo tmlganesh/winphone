@@ -13,8 +13,10 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
+from winphone_core.actions import Action, Receipt, Wait
 from winphone_core.errors import DaemonUnavailable, InvalidRequest, error_from_dict
 from winphone_core.models import CapabilityStatus, DeviceInfo, ScreenshotArtifact
+from winphone_core.observation import Observation
 from winphone_core.runtime import DaemonInfo, read_info, spawn_detached
 
 _WHY = "Run winphone daemon run to see why"
@@ -94,6 +96,21 @@ class DaemonClient:
 
     def view(self, device_id: str) -> int:
         return int(self._call("POST", self._dev(device_id) + "/view")["pid"])
+
+    def observe(self, device_id: str, screenshot: bool = False) -> Observation:
+        return Observation.model_validate(self._call("POST", self._dev(device_id) + "/observe",
+                                                     {"screenshot": screenshot}))
+
+    def act(self, device_id: str, action: Action, wait: Wait | None = None,
+            idempotency_key: str | None = None) -> Receipt:
+        body = {"action": action.model_dump(mode="json", exclude_none=True),
+                "wait": wait.model_dump(mode="json", exclude_none=True) if wait else None,
+                "idempotency_key": idempotency_key}
+        return Receipt.model_validate(self._call("POST", self._dev(device_id) + "/act", body))
+
+    def apps(self, device_id: str, include_system: bool = False) -> list[str]:
+        query = "?all=true" if include_system else ""
+        return [str(p) for p in self._call("GET", self._dev(device_id) + "/apps" + query)]
 
     def pair_wifi(self, host: str, port: int, code: str) -> None:
         self._call("POST", "/wifi/pair", {"host": host, "port": port, "code": code})

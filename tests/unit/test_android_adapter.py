@@ -11,7 +11,8 @@ import adbutils
 import pytest
 from winphone_android import adapter as adapter_mod
 from winphone_android.adapter import AndroidAdapter
-from winphone_core.errors import AdapterError
+from winphone_core.errors import AdapterError, CapabilityUnsupported, InvalidRequest, OutcomeUnknown
+from winphone_core.models import Capability
 
 
 @dataclass
@@ -27,7 +28,38 @@ class FakeDevice:
     def shell(self, cmd: str, timeout: float) -> str:
         if self.fail:
             raise adbutils.AdbTimeout("getprop timed out")
+        if "mCurrentFocus" in cmd:
+            return "  mCurrentFocus=Window{1 u0 com.android.settings/com.android.settings.Settings}"
         return "Pixel 7\n14\n34"
+
+
+class FakeU2:
+    """Stands in for a uiautomator2.Device."""
+
+    def __init__(self, dump_error: Exception | None = None, input_error: Exception | None = None) -> None:
+        self.dump_error, self.input_error = dump_error, input_error
+        self.calls: list[tuple[object, ...]] = []
+
+    def dump_hierarchy(self) -> str:
+        if self.dump_error:
+            raise self.dump_error
+        return '<hierarchy rotation="0"><node text="from-u2" bounds="[0,0][10,10]"/></hierarchy>'
+
+    def click(self, x: int, y: int) -> None:
+        self.calls.append(("click", x, y))
+        if self.input_error:
+            raise self.input_error
+
+    def __call__(self, **selector: object) -> FakeU2:
+        return self
+
+    def set_text(self, text: str) -> None:
+        if self.input_error:
+            raise self.input_error
+        self.calls.append(("set_text", len(text)))
+
+    def stop_uiautomator(self) -> None:
+        self.calls.append(("stop",))
 
 
 class FakeAdbClient:
@@ -41,13 +73,76 @@ class FakeAdbClient:
         return FakeDevice(serial, serial in self.failing)
 
 
-def bare_adapter(client: FakeAdbClient | None = None) -> AndroidAdapter:
+def bare_adapter(client: FakeAdbClient | None = None, u2dev: FakeU2 | None = None) -> AndroidAdapter:
     a = AndroidAdapter.__new__(AndroidAdapter)  # skip __init__: no adb server is started
     a._adb = "adb.exe"
     a._client = client
     a._props = {}
     a._props_lock = threading.Lock()
+    a._u2 = {"A": u2dev} if u2dev else {}
+    a._u2_lock = threading.Lock()
+    a._sizes = {"A": (1224, 2720)}
+    a._input_denied = set()
     return a
+
+
+def test_snapshot_uses_u2_and_reads_foreground_app() -> None:
+    a = bare_adapter(FakeAdbClient([Listed("A", "device")], set()), FakeU2())
+    snap = a.ui_snapshot("A")
+    assert "from-u2" in snap.xml
+    assert (snap.foreground_app, snap.width, snap.height) == ("com.android.settings", 1224, 2720)
+
+
+def test_snapshot_falls_back_to_builtin_dump(monkeypatch: pytest.MonkeyPatch) -> None:
+    builtin = ("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation=\"0\">"
+               '<node text="from-builtin" bounds="[0,0][10,10]"/></hierarchy>UI hierchary dumped to: /dev/tty')
+
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert args[-3:] == ["uiautomator", "dump", "/dev/tty"]
+        return subprocess.CompletedProcess(args, 0, builtin, "")
+
+    monkeypatch.setattr(adapter_mod.subprocess, "run", run)
+    a = bare_adapter(FakeAdbClient([Listed("A", "device")], set()), FakeU2(dump_error=RuntimeError("u2 down")))
+    snap = a.ui_snapshot("A")
+    assert "from-builtin" in snap.xml and snap.xml.rstrip().endswith("</hierarchy>")
+
+
+def test_inject_events_denial_marks_input_unsupported() -> None:
+    denied = RuntimeError("java.lang.SecurityException: Injecting input events requires INJECT_EVENTS")
+    a = bare_adapter(FakeAdbClient([Listed("A", "device")], set()), FakeU2(input_error=denied))
+    with pytest.raises(CapabilityUnsupported):
+        a.tap("A", 10, 10)
+    caps = {c.capability: c for c in a.capabilities("A")}
+    assert not caps[Capability.TAP].supported
+
+
+def test_unexpected_input_error_is_outcome_unknown() -> None:
+    a = bare_adapter(FakeAdbClient([Listed("A", "device")], set()), FakeU2(input_error=RuntimeError("timeout")))
+    with pytest.raises(OutcomeUnknown):
+        a.tap("A", 10, 10)
+
+
+def test_type_text_error_never_contains_the_text() -> None:
+    secret = "hunter" + "2"
+    leak = RuntimeError(f"RPC setText params ['{secret}'] failed")
+    a = bare_adapter(FakeAdbClient([Listed("A", "device")], set()), FakeU2(input_error=leak))
+    with pytest.raises(OutcomeUnknown) as e:
+        a.type_text("A", secret)
+    assert secret not in "".join(traceback.format_exception(e.value)) + str(e.value.hint)
+
+
+def test_launch_rejects_bad_package() -> None:
+    for bad in ("-x", "a;b", "com.x\n", "com.x\nreboot"):
+        with pytest.raises(InvalidRequest):
+            bare_adapter().launch_app("A", bad)
+
+
+def test_release_stops_the_helper() -> None:
+    dev = FakeU2()
+    a = bare_adapter(u2dev=dev)
+    a.release("A")
+    assert ("stop",) in dev.calls and "A" not in a._u2
+    a.release("A")  # second release is a no-op
 
 
 def test_one_phone_failing_getprop_does_not_hide_the_others() -> None:

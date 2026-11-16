@@ -3,7 +3,11 @@ name = "winphone-android"
 version = "0.1.0"
 description = "WINPHONE Android adapter (adb, scrcpy)"
 requires-python = ">=3.11"
-dependencies = ["winphone-core", "adbutils>=2.8"]
+dependencies = [
+    "winphone-core",
+    "adbutils>=2.8",
+    "uiautomator2>=3.7.1",
+]
 
 [build-system]
 requires = ["hatchling"]

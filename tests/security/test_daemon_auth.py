@@ -93,5 +93,33 @@ def test_unexpected_error_is_adapter_error_without_details(tmp_path: Path) -> No
     assert "123456" not in r.text and "secret" not in r.text
 
 
+def test_observe_route_returns_elements(c: TestClient) -> None:
+    r = c.post("/devices/android:A/observe", headers=auth(T), json={})
+    assert r.status_code == 200 and any(e["text"] == "Sign in" for e in r.json()["elements"])
+
+
+def test_act_route_returns_receipt(c: TestClient) -> None:
+    body = {"action": {"kind": "tap", "target": {"selector": {"text": "Sign in"}}}}
+    r = c.post("/devices/android:A/act", headers=auth(T), json=body)
+    assert r.status_code == 200 and r.json()["outcome"] == "verified"
+
+
+def test_act_route_needs_token(c: TestClient) -> None:
+    body = {"action": {"kind": "press", "key": "back"}}
+    assert c.post("/devices/android:A/act", json=body).status_code == 401
+
+
+def test_type_text_not_echoed_in_validation_error(c: TestClient) -> None:
+    secret = "hunter" + "2-secret"
+    for action in ({"kind": "tap", "text": secret}, {"kind": "type", "text": secret, "key": "nope"}):
+        r = c.post("/devices/android:A/act", headers=auth(T), json={"action": action})
+        assert r.status_code == 422 and secret not in r.text
+
+
+def test_apps_route(c: TestClient) -> None:
+    r = c.get("/devices/android:A/apps", headers=auth(T))
+    assert r.status_code == 200 and r.json() == ["com.example"]
+
+
 def test_shutdown_calls_hook(c: TestClient, shutdowns: list[int]) -> None:
     assert c.post("/shutdown", headers=auth(T)).status_code == 200 and shutdowns == [1]

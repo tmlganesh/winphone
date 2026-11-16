@@ -2,22 +2,49 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 
 from winphone_core.models import (
     NOT_READY_HINTS,
+    PACKAGE_PATTERN,
     Capability,
     CapabilityStatus,
     DeviceInfo,
     DeviceState,
+    Key,
     Platform,
     Transport,
 )
 
 PROP_KEYS = ("ro.product.model", "ro.build.version.release", "ro.build.version.sdk")
+KEYCODES = {Key.BACK: 4, Key.HOME: 3, Key.RECENTS: 187, Key.ENTER: 66}
+PACKAGE_RE = re.compile(PACKAGE_PATTERN, re.ASCII)  # use fullmatch: '$' alone accepts a trailing newline
+INPUT_DENIED_REASON = ("The phone blocks simulated input. Xiaomi/Redmi/POCO: Developer options > "
+                       "USB debugging (Security settings); Oppo/Realme: Disable permission monitoring")
 
 _STATES = {"device": DeviceState.ONLINE, "unauthorized": DeviceState.UNAUTHORIZED}
-_BUILT_IN_PHASE_1 = {Capability.SCREENSHOT, Capability.LIVE_VIEW, Capability.WIRELESS}
+_BUILT = {Capability.SCREENSHOT, Capability.LIVE_VIEW, Capability.WIRELESS, Capability.OBSERVE_TREE,
+          Capability.TAP, Capability.SWIPE, Capability.TYPE, Capability.KEYS, Capability.LAUNCH_APP,
+          Capability.LIST_APPS}
+_INPUT = {Capability.TAP, Capability.SWIPE, Capability.TYPE, Capability.KEYS}
+
+
+def parse_focus(dumpsys_window: str) -> str | None:
+    """Package of the focused window, from `dumpsys window`'s mCurrentFocus line."""
+    m = re.search(r"mCurrentFocus=Window\{\S+ \S+ ([^/}\s]+)", dumpsys_window)
+    return m.group(1) if m else None
+
+
+def parse_wm_size(out: str) -> tuple[int, int]:
+    sizes = dict(re.findall(r"(Physical|Override) size: (\d+x\d+)", out))
+    w, h = (sizes.get("Override") or sizes["Physical"]).split("x")
+    return int(w), int(h)
+
+
+def display_size(physical: tuple[int, int], rotation: int) -> tuple[int, int]:
+    w, h = physical
+    return (h, w) if rotation in (1, 3) else (w, h)
 
 
 def device_info_from(serial: str, adb_state: str, props: Mapping[str, str]) -> DeviceInfo:
@@ -36,15 +63,17 @@ def device_info_from(serial: str, adb_state: str, props: Mapping[str, str]) -> D
     )
 
 
-def android_capabilities(state: DeviceState, sdk: int | None,
-                         scrcpy_available: bool) -> list[CapabilityStatus]:
+def android_capabilities(state: DeviceState, sdk: int | None, scrcpy_available: bool,
+                         input_denied: bool = False) -> list[CapabilityStatus]:
     if state is not DeviceState.ONLINE:
         reason = NOT_READY_HINTS[state]
         return [CapabilityStatus(capability=c, supported=False, reason=reason) for c in Capability]
     out: list[CapabilityStatus] = []
     for c in Capability:
-        if c not in _BUILT_IN_PHASE_1:
-            out.append(CapabilityStatus(capability=c, supported=False, reason="Not built yet (Phase 2)"))
+        if c not in _BUILT:
+            out.append(CapabilityStatus(capability=c, supported=False, reason="Not built yet (Phase 3)"))
+        elif c in _INPUT and input_denied:
+            out.append(CapabilityStatus(capability=c, supported=False, reason=INPUT_DENIED_REASON))
         elif c is Capability.LIVE_VIEW and not scrcpy_available:
             out.append(CapabilityStatus(capability=c, supported=False,
                                         reason="scrcpy not installed: run winphone setup"))

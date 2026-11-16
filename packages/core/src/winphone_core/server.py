@@ -9,12 +9,15 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from winphone_core import __version__
+from winphone_core.actions import Action, Receipt, Wait
 from winphone_core.errors import AdapterError, DeviceNotFound, WinphoneError
 from winphone_core.models import CapabilityStatus, DeviceInfo, ScreenshotArtifact
+from winphone_core.observation import Observation
 from winphone_core.orchestrator import Orchestrator
 
 TAURI_ORIGINS = frozenset({"tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"})
@@ -32,6 +35,16 @@ class WifiBody(BaseModel):
 
 class PairBody(WifiBody):
     code: str = Field(pattern=r"^\d{6}$")
+
+
+class ObserveBody(BaseModel):
+    screenshot: bool = False
+
+
+class ActBody(BaseModel):
+    action: Action
+    wait: Wait | None = None
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 def _deny(status: int, code: str, message: str) -> JSONResponse:
@@ -59,6 +72,13 @@ def create_app(orch: Orchestrator, token: str, port: int, on_shutdown: Callable[
     @app.exception_handler(WinphoneError)
     async def winphone_error(request: Request, exc: WinphoneError) -> JSONResponse:
         return JSONResponse(exc.to_dict(), status_code=404 if isinstance(exc, DeviceNotFound) else 409)
+
+    # FastAPI's default 422 echoes each invalid input back, and an action's input can hold typed text.
+    @app.exception_handler(RequestValidationError)
+    async def invalid_body(request: Request, exc: RequestValidationError) -> JSONResponse:
+        detail = [{"loc": list(e.get("loc", ())), "msg": e.get("msg", ""), "type": e.get("type", "")}
+                  for e in exc.errors()]
+        return JSONResponse({"detail": detail}, status_code=422)
 
     # Anything else is a bug or an unexpected tool failure: report its type only, never its text
     # (a subprocess error's text can carry argv, e.g. a pairing code).
@@ -101,6 +121,18 @@ def create_app(orch: Orchestrator, token: str, port: int, on_shutdown: Callable[
     @app.post("/devices/{device_id}/view")
     def view(device_id: str) -> dict[str, int]:
         return {"pid": orch.live_view(device_id)}
+
+    @app.post("/devices/{device_id}/observe")
+    def observe(device_id: str, body: ObserveBody) -> Observation:
+        return orch.observe(device_id, screenshot=body.screenshot)
+
+    @app.post("/devices/{device_id}/act")
+    def act(device_id: str, body: ActBody) -> Receipt:
+        return orch.act(device_id, body.action, wait=body.wait, idempotency_key=body.idempotency_key)
+
+    @app.get("/devices/{device_id}/apps")
+    def apps(device_id: str, all: bool = False) -> list[str]:  # noqa: A002 - the query parameter's name
+        return orch.apps(device_id, include_system=all)
 
     @app.post("/wifi/pair")
     def pair(body: PairBody) -> dict[str, bool]:

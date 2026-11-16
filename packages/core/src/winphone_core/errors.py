@@ -73,10 +73,26 @@ class InvalidRequest(WinphoneError):
     exit_code = 2
 
 
+class StaleReference(WinphoneError):
+    code = "stale_reference"
+
+
+class TargetNotFound(WinphoneError):
+    code = "target_not_found"
+
+
+class TargetAmbiguous(WinphoneError):
+    code = "target_ambiguous"
+    exit_code = 2
+
+
 _BY_CODE: dict[str, type[WinphoneError]] = {
     cls.code: cls
     for cls in (
         InvalidRequest,
+        StaleReference,
+        TargetNotFound,
+        TargetAmbiguous,
         DeviceNotFound,
         DeviceNotReady,
         DeviceAmbiguous,

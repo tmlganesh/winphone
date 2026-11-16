@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import functools
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, ParamSpec, TypeVar
 
 import typer
+from pydantic import BaseModel, ValidationError
+from winphone_core.actions import Action, Target, Wait
 from winphone_core.client import DaemonClient, connect_daemon
 from winphone_core.errors import DaemonUnavailable, InvalidRequest, WinphoneError
-from winphone_core.models import NOT_READY_HINTS, DeviceInfo
+from winphone_core.models import NOT_READY_HINTS, DeviceInfo, Key
+from winphone_core.observation import Selector, find, to_compact
 
 from winphone_cli import output
 
@@ -207,6 +211,180 @@ def view(ctx: typer.Context, device: DeviceOpt = None) -> None:
     d = client.resolve(device)
     pid = client.view(d.id)
     _show(ctx, {"id": d.id, "pid": pid}, lambda: output.say(f"Live view of {d.id} opened (pid {pid})."))
+
+
+# --- Phase 2: observe and act ------------------------------------------------------------------
+
+app_app = typer.Typer(no_args_is_help=True, help="Apps on the phone.")
+app.add_typer(app_app, name="app")
+
+WaitText = Annotated[str | None, typer.Option("--wait-text", help="Succeed when this text is on screen.")]
+WaitGone = Annotated[str | None, typer.Option("--wait-gone", help="Succeed when this text is gone.")]
+WaitApp = Annotated[str | None, typer.Option("--wait-app", help="Succeed when this package is in front.")]
+WaitTimeout = Annotated[float | None, typer.Option(
+    "--wait-timeout", help="Seconds to wait (default: 3 for 'screen changed', 10 for launch and --wait-* conditions).")]
+M = TypeVar("M", bound=BaseModel)
+_EXIT_BY_OUTCOME = {"verified": 0, "not_verified": 1, "failed": 1, "unknown": 6}
+
+
+def _xy(value: str) -> tuple[int, int]:
+    x, sep, y = value.partition(",")
+    if not sep or not x.strip().isdigit() or not y.strip().isdigit():
+        raise InvalidRequest(f"expected X,Y, got {value!r}")
+    return int(x), int(y)
+
+
+def _wait(text: str | None, gone: str | None, app_pkg: str | None, timeout: float | None,
+          launching: str | None = None) -> Wait | None:
+    conditions = {k: v for k, v in (("text_visible", text), ("text_gone", gone), ("app_foreground", app_pkg)) if v}
+    if len(conditions) > 1:
+        raise InvalidRequest("use one --wait-* condition")
+    if conditions:
+        return _model(Wait, **conditions, timeout_s=timeout or 10.0)
+    if timeout is None:
+        return None  # the engine's default: screen changed (3 s), or app in front (10 s) for launch
+    if launching:  # a longer timeout for a launch still means "until the app is in front"
+        return _model(Wait, app_foreground=launching, timeout_s=timeout)
+    return _model(Wait, revision_changed=True, timeout_s=timeout)
+
+
+def _model(cls: type[M], **kwargs: Any) -> M:
+    """Build an Action/Wait/Target, turning a validation failure into a usage error (exit 2)."""
+    try:
+        return cls(**kwargs)
+    except ValidationError as e:
+        raise InvalidRequest("; ".join(str(err["msg"]) for err in e.errors())) from None
+
+
+def _target(ref: str | None, text: str | None = None, desc: str | None = None, rid: str | None = None,
+            at: str | None = None) -> Target | None:
+    given = [v for v in (ref, text, desc, rid, at) if v]
+    if len(given) > 1:
+        raise InvalidRequest("give one target: REF, --text, --desc, --id or --at")
+    if ref:
+        return _model(Target, ref=ref)
+    if at:
+        return _model(Target, point=_xy(at))
+    if text or desc or rid:
+        return _model(Target, selector=Selector(text=text, desc=desc, resource_id=rid))
+    return None
+
+
+def _act(ctx: typer.Context, device: str | None, action: Action, wait: Wait | None) -> None:
+    budget = (wait.timeout_s if wait else 10.0) + 30  # the daemon call must outlive the wait
+    client = connect_daemon(call_timeout=max(_opts(ctx).timeout, budget))
+    r = client.act(client.resolve(device).id, action, wait=wait)
+    _show(ctx, r, lambda: output.say(f"{r.outcome}: {r.evidence} ({r.target_ref or '-'}, obs {r.observation_id}, "
+                                     f"{r.duration_ms} ms)"))
+    if _EXIT_BY_OUTCOME[r.outcome]:
+        raise typer.Exit(_EXIT_BY_OUTCOME[r.outcome])
+
+
+@app.command()
+@handled
+def observe(
+    ctx: typer.Context,
+    device: DeviceOpt = None,
+    find_text: Annotated[str | None, typer.Option("--find", help="Only elements whose text contains this.")] = None,
+    shot: Annotated[bool, typer.Option("--screenshot", help="Also save a screenshot.")] = False,
+) -> None:
+    """Read the screen as a compact list of elements (e1, e2 ...) to act on."""
+    client = _client(ctx)
+    obs = client.observe(client.resolve(device).id, screenshot=shot)
+    if find_text:
+        keep = {e.ref for e in find(obs, Selector(text_contains=find_text))}
+        obs = obs.model_copy(update={"elements": [e for e in obs.elements if e.ref in keep]})
+    _show(ctx, obs, lambda: output.say(to_compact(obs) + (f"\n# screenshot {obs.screenshot_path}"
+                                                          if obs.screenshot_path else "")))
+
+
+@app.command()
+@handled
+def tap(
+    ctx: typer.Context,
+    ref: Annotated[str | None, typer.Argument(help="Element ref from the latest observe, e.g. e7.")] = None,
+    device: DeviceOpt = None,
+    text: Annotated[str | None, typer.Option("--text", help="Element with exactly this text.")] = None,
+    desc: Annotated[str | None, typer.Option("--desc", help="Element with this accessibility description.")] = None,
+    rid: Annotated[str | None, typer.Option("--id", help="Element with this resource id.")] = None,
+    at: Annotated[str | None, typer.Option("--at", help="Screen point X,Y.")] = None,
+    wait_text: WaitText = None, wait_gone: WaitGone = None, wait_app: WaitApp = None, wait_timeout: WaitTimeout = None,
+) -> None:
+    """Tap an element (or a point) and report whether the screen responded."""
+    target = _target(ref, text, desc, rid, at)
+    _act(ctx, device, _model(Action, kind="tap", target=target),
+         _wait(wait_text, wait_gone, wait_app, wait_timeout))
+
+
+@app.command()
+@handled
+def swipe(
+    ctx: typer.Context,
+    direction: Annotated[str | None, typer.Argument(help="up, down, left or right.")] = None,
+    device: DeviceOpt = None,
+    on: Annotated[str | None, typer.Option("--on", help="Swipe inside this element ref.")] = None,
+    start: Annotated[str | None, typer.Option("--from", help="Start point X,Y.")] = None,
+    end: Annotated[str | None, typer.Option("--to", help="End point X,Y.")] = None,
+    wait_text: WaitText = None, wait_gone: WaitGone = None, wait_app: WaitApp = None, wait_timeout: WaitTimeout = None,
+) -> None:
+    """Swipe in a direction (content moves the other way), or from one point to another."""
+    action = _model(Action, kind="swipe", direction=direction, target=_target(on, at=start),
+                    to=_xy(end) if end else None)
+    _act(ctx, device, action, _wait(wait_text, wait_gone, wait_app, wait_timeout))
+
+
+@app.command("type")
+@handled
+def type_(
+    ctx: typer.Context,
+    text: Annotated[str | None, typer.Argument(
+        help="Text to put in the field. Omit it for passwords: you are prompted (hidden) or it is read from "
+             "stdin, so it never lands in your shell history.")] = None,
+    device: DeviceOpt = None,
+    into: Annotated[str | None, typer.Option("--into", help="Tap this element ref first.")] = None,
+    wait_text: WaitText = None, wait_gone: WaitGone = None, wait_app: WaitApp = None, wait_timeout: WaitTimeout = None,
+) -> None:
+    """Set the text of the focused field (or of --into). The text is never printed or logged."""
+    if text is None:
+        raw = sys.stdin.read() if not sys.stdin.isatty() else typer.prompt("Text", hide_input=True)
+        text = raw.removesuffix("\n").removesuffix("\r")
+    _act(ctx, device, _model(Action, kind="type", text=text, target=_target(into)),
+         _wait(wait_text, wait_gone, wait_app, wait_timeout))
+
+
+@app.command()
+@handled
+def press(
+    ctx: typer.Context,
+    key: Annotated[Key, typer.Argument(help="back, home, recents or enter.")],
+    device: DeviceOpt = None,
+    wait_text: WaitText = None, wait_gone: WaitGone = None, wait_app: WaitApp = None, wait_timeout: WaitTimeout = None,
+) -> None:
+    """Press a system key."""
+    _act(ctx, device, _model(Action, kind="press", key=key), _wait(wait_text, wait_gone, wait_app, wait_timeout))
+
+
+@app.command()
+@handled
+def apps(ctx: typer.Context, device: DeviceOpt = None,
+         include_system: Annotated[bool, typer.Option("--all", help="Include system apps.")] = False) -> None:
+    """List installed packages (your own apps unless --all)."""
+    client = _client(ctx)
+    found = client.apps(client.resolve(device).id, include_system=include_system)
+    _show(ctx, found, lambda: output.say("\n".join(found) or "No apps."))
+
+
+@app_app.command("launch")
+@handled
+def app_launch(
+    ctx: typer.Context,
+    package: Annotated[str, typer.Argument(help="Package name, e.g. com.android.settings.")],
+    device: DeviceOpt = None,
+    wait_text: WaitText = None, wait_gone: WaitGone = None, wait_app: WaitApp = None, wait_timeout: WaitTimeout = None,
+) -> None:
+    """Launch an app and wait until it is in front."""
+    _act(ctx, device, _model(Action, kind="launch", package=package),
+         _wait(wait_text, wait_gone, wait_app, wait_timeout, launching=package))
 
 
 @daemon_app.command("run")

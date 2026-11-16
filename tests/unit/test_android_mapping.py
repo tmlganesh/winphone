@@ -1,4 +1,11 @@
-from winphone_android.mapping import android_capabilities, device_info_from
+from winphone_android.mapping import (
+    PACKAGE_RE,
+    android_capabilities,
+    device_info_from,
+    display_size,
+    parse_focus,
+    parse_wm_size,
+)
 from winphone_core.models import Capability, DeviceState, Transport
 
 
@@ -37,12 +44,44 @@ def test_capabilities_cover_every_capability_once() -> None:
     assert sorted(caps) == sorted(Capability)
 
 
-def test_capabilities_phase2_items_say_so() -> None:
+def test_capabilities_phase2_supported() -> None:
     c = {x.capability: x for x in android_capabilities(DeviceState.ONLINE, 34, True)}
-    assert c[Capability.SCREENSHOT].supported
-    assert c[Capability.WIRELESS].supported
-    assert not c[Capability.TAP].supported
-    assert c[Capability.TAP].reason == "Not built yet (Phase 2)"
+    for cap in (Capability.SCREENSHOT, Capability.WIRELESS, Capability.OBSERVE_TREE, Capability.TAP,
+                Capability.SWIPE, Capability.TYPE, Capability.KEYS, Capability.LAUNCH_APP, Capability.LIST_APPS):
+        assert c[cap].supported, cap
+    for cap in (Capability.INSTALL_APP, Capability.LOGS, Capability.RECORD):
+        assert not c[cap].supported and c[cap].reason == "Not built yet (Phase 3)"
+
+
+def test_input_denied_marks_input_unsupported_with_vendor_hint() -> None:
+    c = {x.capability: x for x in android_capabilities(DeviceState.ONLINE, 34, True, input_denied=True)}
+    for cap in (Capability.TAP, Capability.SWIPE, Capability.TYPE, Capability.KEYS):
+        assert not c[cap].supported and "USB debugging (Security settings)" in (c[cap].reason or "")
+    assert c[Capability.OBSERVE_TREE].supported
+
+
+def test_parse_focus() -> None:
+    out = "  mCurrentFocus=Window{e8328df u0 com.nothing.launcher/com.android.searchlauncher.SearchLauncher}\n"
+    assert parse_focus(out) == "com.nothing.launcher"
+    assert parse_focus("mCurrentFocus=null\n") is None
+    assert parse_focus("") is None
+
+
+def test_parse_wm_size_prefers_override() -> None:
+    assert parse_wm_size("Physical size: 1224x2720\n") == (1224, 2720)
+    assert parse_wm_size("Physical size: 1224x2720\nOverride size: 1080x2400\n") == (1080, 2400)
+
+
+def test_display_size_rotated() -> None:
+    assert display_size((1224, 2720), 0) == (1224, 2720)
+    assert display_size((1224, 2720), 1) == (2720, 1224)
+    assert display_size((1224, 2720), 3) == (2720, 1224)
+
+
+def test_package_name_rule() -> None:
+    assert PACKAGE_RE.match("com.android.settings")
+    for bad in ("-x", "a;b", "settings", "com.x y", "com..x"):
+        assert not PACKAGE_RE.match(bad), bad
 
 
 def test_live_view_unsupported_without_scrcpy() -> None:

@@ -2,12 +2,46 @@
 
 from __future__ import annotations
 
+import html
 import struct
 import zlib
 from collections.abc import Callable
 
 from fastapi.testclient import TestClient
-from winphone_core.models import Capability, CapabilityStatus, DeviceInfo, DeviceState, Platform, Transport
+from winphone_core.models import (
+    Capability,
+    CapabilityStatus,
+    DeviceInfo,
+    DeviceState,
+    Key,
+    Platform,
+    Transport,
+    UiSnapshot,
+)
+
+_NODE_DEFAULTS = {
+    "text": "", "resource-id": "", "class": "android.widget.TextView", "package": "com.example",
+    "content-desc": "", "checkable": "false", "checked": "false", "clickable": "false", "enabled": "true",
+    "focusable": "false", "focused": "false", "scrollable": "false", "password": "false", "selected": "false",
+    "bounds": "[0,0][100,100]",
+}
+
+
+def ui_xml(*nodes: dict[str, str], rotation: int = 0) -> str:
+    """A flat UI-hierarchy dump, in uiautomator's format, from attribute dicts."""
+    body = "".join("<node " + " ".join(f'{k}="{html.escape(v, quote=True)}"'
+                                       for k, v in {**_NODE_DEFAULTS, **n}.items()) + "/>" for n in nodes)
+    return f'<hierarchy rotation="{rotation}">{body}</hierarchy>'
+
+
+SIGN_IN = {"text": "Sign in", "resource-id": "com.example:id/login", "class": "android.widget.Button",
+           "clickable": "true", "bounds": "[340,1580][740,1660]"}
+PASSWORD = {"resource-id": "com.example:id/password", "class": "android.widget.EditText", "password": "true",
+            "clickable": "true", "focusable": "true", "bounds": "[100,700][980,820]"}
+LOGIN = ui_xml(PASSWORD, SIGN_IN)
+LOGIN_SHIFTED = ui_xml({"text": "Banner", "bounds": "[0,100][1080,200]"}, PASSWORD,
+                       {**SIGN_IN, "bounds": "[340,1780][740,1860]"})
+HOME = ui_xml({"text": "Welcome back", "bounds": "[100,300][980,400]"})
 
 
 def make_png(width: int, height: int) -> bytes:
@@ -41,11 +75,60 @@ class FakeAdapter:
     platform = Platform.ANDROID
 
     def __init__(self, devices: list[DeviceInfo] | None = None,
-                 unsupported: dict[Capability, str] | None = None) -> None:
+                 unsupported: dict[Capability, str] | None = None,
+                 screens: list[tuple[str, str | None]] | None = None) -> None:
         self.devices = {d.serial: d for d in devices or []}
         self.unsupported = unsupported or {}
         self.png = make_png(4, 8)
         self.calls: list[tuple[str, ...]] = []
+        # Scripted screens: each input moves to the next one (when advance_on_input), the last one stays.
+        self.screens = screens or [(LOGIN, "com.example"), (HOME, "com.example")]
+        self.index = 0
+        self.advance_on_input = True
+        self.input_error: Exception | None = None
+        self.type_error: Exception | None = None
+        self.snapshot_error: Exception | None = None
+        self.break_snapshots_after_input = False  # the phone vanishes right after an input lands
+
+    def ui_snapshot(self, serial: str) -> UiSnapshot:
+        if self.snapshot_error is not None:
+            raise self.snapshot_error
+        xml, app = self.screens[min(self.index, len(self.screens) - 1)]
+        return UiSnapshot(xml=xml, foreground_app=app, width=1080, height=2400)
+
+    def _input(self, *call: object) -> None:
+        self.calls.append(tuple(str(c) for c in call))
+        if self.input_error is not None:
+            raise self.input_error
+        if self.advance_on_input:
+            self.index += 1
+        if self.break_snapshots_after_input:
+            from winphone_core.errors import AdapterError
+
+            self.snapshot_error = AdapterError("phone gone")
+
+    def tap(self, serial: str, x: int, y: int) -> None:
+        self._input("tap", x, y)
+
+    def swipe(self, serial: str, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self._input("swipe", x1, y1, x2, y2)
+
+    def type_text(self, serial: str, text: str) -> None:
+        if self.type_error is not None:
+            raise self.type_error
+        self._input("type", len(text))
+
+    def press(self, serial: str, key: Key) -> None:
+        self._input("press", key.value)
+
+    def launch_app(self, serial: str, package: str) -> None:
+        self._input("launch", package)
+
+    def list_apps(self, serial: str, include_system: bool) -> list[str]:
+        return ["com.example"]
+
+    def release(self, serial: str) -> None:
+        self.calls.append(("release", serial))
 
     def discover(self) -> list[DeviceInfo]:
         return list(self.devices.values())

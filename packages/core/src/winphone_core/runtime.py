@@ -98,6 +98,7 @@ def serve(orch: Orchestrator, idle_limit: float = IDLE_LIMIT_S) -> None:
         server.run(sockets=[sock])
     finally:
         stop.set()
+        orch.close()  # stop on-phone helpers started by this daemon
         current = read_info()
         if current is not None and current.pid == os.getpid():
             info_path().unlink(missing_ok=True)

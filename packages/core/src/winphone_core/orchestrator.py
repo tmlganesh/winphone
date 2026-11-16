@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import itertools
 import threading
+from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from winphone_core import actions
+from winphone_core.actions import Action, Receipt, Wait
 from winphone_core.adapter import DeviceAdapter
 from winphone_core.artifacts import ArtifactStore, png_size
 from winphone_core.errors import (
@@ -26,6 +30,9 @@ from winphone_core.models import (
     ScreenshotArtifact,
     Transport,
 )
+from winphone_core.observation import Observation, ObservationStore, normalize
+
+_RECEIPTS_KEPT = 128
 
 
 class Orchestrator:
@@ -34,6 +41,16 @@ class Orchestrator:
         self._artifacts = artifacts
         self._held: set[str] = set()
         self._lock = threading.Lock()
+        self._store = ObservationStore()
+        self._ids = itertools.count(1)
+        self._device_locks: dict[str, threading.RLock] = {}
+        self._receipts: OrderedDict[str, Receipt] = OrderedDict()  # idempotency keys
+        self._touched: dict[str, tuple[DeviceAdapter, str]] = {}  # phones that may run a helper
+
+    def _device_lock(self, device_id: str) -> threading.RLock:
+        """One phone does one thing at a time: observe and act never interleave on it."""
+        with self._lock:
+            return self._device_locks.setdefault(device_id, threading.RLock())
 
     # Discovery is never cached: a phone can vanish between two calls.
     def _discover(self) -> list[tuple[DeviceAdapter, DeviceInfo]]:
@@ -87,8 +104,62 @@ class Orchestrator:
         a, d = self._find(device_id)
         with self._lock:
             self._held.discard(d.id)
+        with self._lock:
+            self._touched.pop(d.id, None)
+        a.release(d.serial)
         if d.transport is Transport.WIFI:
             a.disconnect_wifi(d.serial)
+
+    def close(self) -> None:
+        """Stop every on-phone helper this daemon started (the daemon is exiting)."""
+        with self._lock:
+            touched, self._touched = list(self._touched.values()), {}
+        for adapter, serial in touched:
+            try:
+                adapter.release(serial)
+            except WinphoneError:
+                pass  # the phone may already be gone
+
+    def _observe(self, a: DeviceAdapter, d: DeviceInfo) -> Observation:
+        """Read the screen without publishing it: only observe() decides what a bare ref means."""
+        snap = a.ui_snapshot(d.serial)
+        with self._lock:
+            self._touched[d.id] = (a, d.serial)
+        return normalize(snap.xml, device_id=d.id, observation_id=f"o{next(self._ids)}",
+                         foreground_app=snap.foreground_app, width=snap.width, height=snap.height)
+
+    def observe(self, device_id: str, screenshot: bool = False) -> Observation:
+        a, d = self._ready(device_id, Capability.OBSERVE_TREE)
+        with self._device_lock(d.id):
+            obs = self._observe(a, d)
+            self._store.put(obs)
+        if screenshot:
+            obs = obs.model_copy(update={"screenshot_path": self.screenshot(d.id).path})
+        return obs
+
+    def act(self, device_id: str, action: Action, wait: Wait | None = None,
+            idempotency_key: str | None = None) -> Receipt:
+        a, d = self._ready(device_id, actions.CAPABILITY[action.kind])
+        with self._device_lock(d.id):
+            if idempotency_key is not None and idempotency_key in self._receipts:
+                return self._receipts[idempotency_key]
+
+            def previous(observation_id: str | None) -> Observation | None:
+                if observation_id is None:
+                    return self._store.latest(d.id)
+                return self._store.get(d.id, observation_id)
+
+            receipt = actions.run(action, wait, adapter=a, serial=d.serial, observe=lambda: self._observe(a, d),
+                                  previous=previous, record=lambda obs: self._store.put(obs, latest=False))
+            if idempotency_key is not None:
+                self._receipts[idempotency_key] = receipt
+                while len(self._receipts) > _RECEIPTS_KEPT:
+                    self._receipts.popitem(last=False)
+        return receipt
+
+    def apps(self, device_id: str, include_system: bool = False) -> list[str]:
+        a, d = self._ready(device_id, Capability.LIST_APPS)
+        return a.list_apps(d.serial, include_system)
 
     def held_count(self) -> int:
         """Holds on phones that are gone are dropped, so an unplugged phone cannot keep the daemon alive."""
