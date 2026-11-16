@@ -1,3 +1,6 @@
+"""Printing. Device text (screen elements, logs, crash names, tool errors) is untrusted: it is always printed
+literally, never parsed as Rich markup."""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +11,7 @@ import typer
 from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 from winphone_core.errors import WinphoneError
 
 
@@ -24,14 +28,15 @@ def emit_json(data: Any) -> None:
 
 
 def table(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> None:
+    """Cells are literal text; pass a rich Text to style one on purpose."""
     t = Table(*columns, box=None, header_style="bold")
     for row in rows:
-        t.add_row(*("" if v is None else str(v) for v in row))
+        t.add_row(*(v if isinstance(v, Text) else Text("" if v is None else str(v)) for v in row))
     Console().print(t)
 
 
 def say(text: str) -> None:
-    Console().print(text, highlight=False)
+    Console().print(text, markup=False, highlight=False)
 
 
 def error(e: WinphoneError, as_json: bool) -> None:
@@ -39,6 +44,6 @@ def error(e: WinphoneError, as_json: bool) -> None:
         emit_json(e.to_dict())
         return
     err = Console(stderr=True)
-    err.print(f"[red]error:[/red] {e.message}", highlight=False)
+    err.print(Text("error: ", style="red") + Text(e.message), highlight=False)
     if e.hint:
-        err.print(f"hint: {e.hint}", highlight=False)
+        err.print(Text(f"hint: {e.hint}"), highlight=False)

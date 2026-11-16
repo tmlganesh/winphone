@@ -22,6 +22,7 @@ NOT_READY_HINTS = {
     "unauthorized": "Unlock the phone and accept 'Allow USB debugging'",
     "offline": "Replug the cable, or toggle USB debugging off and on",
 }
+IOS_NOT_TRUSTED_HINT = "Unlock the iPhone and tap Trust (replug it if the prompt does not appear)"
 
 
 class Transport(StrEnum):
@@ -55,6 +56,13 @@ class Capability(StrEnum):
     RECORD = "record"
     LIVE_VIEW = "live_view"
     WIRELESS = "wireless"
+    CRASH_REPORTS = "crash_reports"
+
+
+def not_ready_hint(platform: Platform, state: DeviceState) -> str | None:
+    if platform is Platform.IOS and state is DeviceState.UNAUTHORIZED:
+        return IOS_NOT_TRUSTED_HINT
+    return NOT_READY_HINTS.get(state)
 
 
 class CapabilityStatus(BaseModel):

@@ -54,11 +54,11 @@ def _adb_devices(adb: Path) -> list[tuple[str, str]]:
     return parse_adb_devices(_run([str(adb), "devices"]).stdout)
 
 
-def _tool(name: str) -> Check:
+def _tool(name: str, required: bool = True) -> Check:
     t = resolve(name)
     if t.path is None:
         detail = f"only {t.version} found on PATH, too old" if t.version else "not installed"
-        return Check(name=name, status="fail", detail=detail, fix="Run winphone setup")
+        return Check(name=name, status="fail" if required else "warn", detail=detail, fix="Run winphone setup")
     return Check(name=name, status="ok", detail=f"{t.version or 'unknown version'} ({t.source}) {t.path}")
 
 
@@ -103,7 +103,6 @@ def _later_phases() -> list[Check]:
     msvc = _VSWHERE.exists() and bool(_run([str(_VSWHERE), "-products", "*", "-requires",
                                             "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
                                             "-property", "installationPath"]).stdout.strip())
-    apple = "RUNNING" in _run(["sc", "query", "Apple Mobile Device Service"]).stdout
     return [
         Check(name="rust (phase 4)", status="ok" if rustc else "warn",
               detail=_run([rustc, "--version"]).stdout.strip() if rustc else "not installed",
@@ -111,9 +110,16 @@ def _later_phases() -> list[Check]:
         Check(name="msvc c++ tools (phase 4)", status="ok" if msvc else "warn",
               detail="installed" if msvc else "not installed",
               fix=None if msvc else "Visual Studio Installer > 'Desktop development with C++'"),
-        Check(name="apple mobile device service (phase 5)", status="ok" if apple else "warn",
-              detail="running" if apple else "not running or not installed",
-              fix=None if apple else "Install Apple Devices from the Microsoft Store"),
+    ]
+
+
+def _iphone_support() -> list[Check]:
+    apple = "RUNNING" in _run(["sc", "query", "Apple Mobile Device Service"]).stdout
+    return [
+        Check(name="iphone support", status="ok" if apple else "warn",
+              detail="Apple Mobile Device Service running" if apple else "Apple Mobile Device Service not running",
+              fix=None if apple else "Install Apple Devices from the Microsoft Store (needed for iPhones)"),
+        _tool("go-ios", required=False),
     ]
 
 
@@ -126,5 +132,6 @@ def run_checks() -> list[Check]:
         _tool("scrcpy"),
         *_daemon(),
         *_phones(),
+        *_iphone_support(),
         *_later_phases(),
     ]

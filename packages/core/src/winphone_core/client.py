@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from winphone_core.actions import Action, Receipt, Wait
 from winphone_core.errors import DaemonUnavailable, InvalidRequest, error_from_dict
@@ -111,6 +111,16 @@ class DaemonClient:
     def apps(self, device_id: str, include_system: bool = False) -> list[str]:
         query = "?all=true" if include_system else ""
         return [str(p) for p in self._call("GET", self._dev(device_id) + "/apps" + query)]
+
+    def logs(self, device_id: str, lines: int = 200, contains: str | None = None) -> list[str]:
+        query = urlencode({"lines": lines, **({"contains": contains} if contains else {})})
+        return [str(x) for x in self._call("GET", f"{self._dev(device_id)}/logs?{query}")]
+
+    def crashes(self, device_id: str) -> list[str]:
+        return [str(x) for x in self._call("GET", self._dev(device_id) + "/crashes")]
+
+    def pull_crash(self, device_id: str, name: str) -> str:
+        return str(self._call("POST", self._dev(device_id) + "/crashes/pull", {"name": name})["path"])
 
     def pair_wifi(self, host: str, port: int, code: str) -> None:
         self._call("POST", "/wifi/pair", {"host": host, "port": port, "code": code})

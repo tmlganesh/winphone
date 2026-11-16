@@ -7,11 +7,11 @@ server and a desktop app) talk to it.
 Design: [docs/superpowers/specs/2026-11-16-winphone-design.md](docs/superpowers/specs/2026-11-16-winphone-design.md) ·
 Phase 1 plan: [docs/superpowers/plans/2026-11-16-winphone-phase1.md](docs/superpowers/plans/2026-11-16-winphone-phase1.md)
 
-## Status: Phase 2 (Android: read the screen and act on it)
+## Status: Phases 1, 2 and 5
 
 | Works now | Not built yet |
 |---|---|
-| `setup`, `doctor`, `devices`, `connect` / `disconnect` (USB and Wi-Fi), `capabilities`, `screenshot`, `view` (live scrcpy window), `daemon run/start/stop/status` · **Phase 2:** `observe`, `tap`, `swipe`, `type`, `press`, `apps`, `app launch`, each with a verified/not-verified receipt | install, logs, recording, MCP server and permissions (Phase 3) · desktop app (Phase 4) · iPhone (Phases 5-6) |
+| **Android:** `setup`, `doctor`, `devices`, `connect` / `disconnect` (USB and Wi-Fi), `capabilities`, `screenshot`, `view` (live scrcpy window), `observe`, `tap`, `swipe`, `type`, `press`, `apps`, `app launch` (each action with a verified/not-verified receipt), `logs` · **iPhone from Windows:** `devices`, `capabilities`, `apps`, `logs`, `crashes`, `crashes pull` | install, recording, MCP server and permissions (Phase 3) · desktop app (Phase 4) · full iPhone control through a Mac (Phase 6) |
 
 `winphone capabilities` reports exactly what the connected phone supports right now, with the reason for
 everything it does not.
@@ -64,6 +64,8 @@ winphone connect --pair 192.168.1.20:37123 --code 123456 --wifi 192.168.1.20:410
 | `winphone type [TEXT] [--into REF]` | Set the focused field's text (Unicode; never printed or logged). Omit TEXT for passwords: you get a hidden prompt (or it is read from stdin), so it never lands in shell history |
 | `winphone press back\|home\|recents\|enter` | System keys |
 | `winphone apps [--all]` · `winphone app launch PKG` | List packages · launch and wait until it is in front |
+| `winphone logs [--lines N] [--grep TEXT]` | Android: recent logcat. iPhone: new log lines for up to 5 s |
+| `winphone crashes` · `winphone crashes pull NAME [-o DIR]` | iPhone crash reports: list, copy one |
 
 `-d` takes a device id (`android:<serial>`) or a bare serial; with one phone online it can be omitted, with
 two it is required. Add `--json` before the command for machine-readable output. Action commands take
@@ -96,6 +98,23 @@ verified: screen changed (e107, obs o29, 812 ms)
 - Screen text is data: WINPHONE stores and returns it, never acts on what it says.
 - What goes on the phone: uiautomator2's helper `/data/local/tmp/u2.jar` (no app is installed). It is
   stopped when you `disconnect` or the service exits.
+
+## iPhone from Windows (no Mac)
+
+Needs Apple's **Apple Devices** app (Microsoft Store), which runs Apple Mobile Device Service, and
+`winphone setup` (installs go-ios 1.3.2, MIT, SHA-256 checked). Plug the iPhone in, unlock it and tap
+**Trust**. `winphone devices` then lists it as `ios:<udid>`.
+
+| From Windows alone | How |
+|---|---|
+| Model, iOS version, trust state | Apple Mobile Device Service, directly (6 ms) |
+| Installed apps, live logs, crash reports | go-ios |
+| Screenshot, launching an app | **Not possible:** Apple only allows it with the developer disk image that ships with Xcode on a Mac, and Developer Mode on |
+| Tap, type, read the screen | **Not possible:** needs Apple's XCTest via WebDriverAgent, built and signed on a Mac (Phase 6) |
+
+`winphone capabilities -d <udid>` shows exactly this, with the reason for every "no". WINPHONE never
+downloads Apple software (go-ios's own `image auto`, which fetches Apple's disk images from an unofficial
+mirror, is not used).
 
 ## How it works
 
@@ -134,7 +153,8 @@ Phone: model A069, Android 17, over USB (2026-11-16).
 | `tap` → verified receipt (includes observing before and after) | 812 ms median |
 | `press back` → verified receipt | 1.48 s median (waits out the page transition) |
 | `winphone observe` from the CLI | 2.6–3.5 s (Python start-up dominates) |
-| Full test suite with the real-phone tests | 151 passed, 0 skipped |
+| iPhone X (iOS 16.7.16) discovery | 6 ms median (46 ms the first time) |
+| iPhone: apps · 20 log lines · crash list | 1.7 s · 3.9 s · 1.8 s |
 
 The CLI pays Python start-up on every call; the MCP server (Phase 3) is a long-running process and pays it
 once.
@@ -152,7 +172,10 @@ Real-phone tests only list, probe, take screenshots and open the viewer: no taps
 
 ## Known limitations
 
-- Android only. Install, logs and recording come in Phase 3 with the permission model.
+- Install and recording come in Phase 3 with the permission model. Android crash reports need root.
+- iPhone: no screenshots, launching, tapping or typing from Windows alone (see above). An iPhone over
+  Wi-Fi is not supported. Crash reports whose names contain `* ? [ ]` cannot be copied (go-ios treats the
+  name as a pattern). Without Apple's service, WINPHONE looks for iPhones again every 10 s.
 - On Android 17, uiautomator2 3.7.1's device-info call is broken; WINPHONE never uses it and reads the
   foreground app and rotation from `dumpsys` instead. If the helper fails, the screen is read with Android's
   own dump (2.5–3.2 s instead of ~0.4 s).

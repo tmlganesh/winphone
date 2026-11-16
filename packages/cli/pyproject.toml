@@ -3,7 +3,7 @@ name = "winphone-cli"
 version = "0.1.0"
 description = "winphone command-line interface"
 requires-python = ">=3.11"
-dependencies = ["winphone-core", "winphone-android", "typer>=0.12", "rich>=13"]
+dependencies = ["winphone-core", "winphone-android", "winphone-ios", "typer>=0.12", "rich>=13"]
 
 [project.scripts]
 winphone = "winphone_cli.main:app"
@@ -18,3 +18,4 @@ packages = ["src/winphone_cli"]
 [tool.uv.sources]
 winphone-core = { workspace = true }
 winphone-android = { workspace = true }
+winphone-ios = { workspace = true }

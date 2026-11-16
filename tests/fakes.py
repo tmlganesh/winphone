@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import html
+import plistlib
+import socket
+import socketserver
 import struct
+import threading
 import zlib
 from collections.abc import Callable
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from winphone_core.models import (
@@ -42,6 +47,70 @@ LOGIN = ui_xml(PASSWORD, SIGN_IN)
 LOGIN_SHIFTED = ui_xml({"text": "Banner", "bounds": "[0,100][1080,200]"}, PASSWORD,
                        {**SIGN_IN, "bounds": "[340,1780][740,1860]"})
 HOME = ui_xml({"text": "Welcome back", "bounds": "[100,300][980,400]"})
+
+
+IPHONE_UDID = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+IPHONE_VALUES = {"ProductType": "iPhone10,6", "ProductVersion": "16.7.16"}
+
+
+def _read_exact(s: socket.socket, n: int) -> bytes:
+    data = b""
+    while len(data) < n:
+        chunk = s.recv(n - len(data))
+        if not chunk:
+            raise ConnectionError
+        data += chunk
+    return data
+
+
+class FakeMux(socketserver.BaseRequestHandler):
+    """Speaks Apple's usbmuxd protocol: one iPhone (over USB and over the network), paired."""
+
+    def reply(self, payload: dict[str, object]) -> None:
+        body = plistlib.dumps(payload)
+        self.request.sendall(struct.pack("<IIII", 16 + len(body), 1, 8, 1) + body)
+
+    def handle(self) -> None:
+        length, = struct.unpack("<I", _read_exact(self.request, 4))
+        msg = plistlib.loads(_read_exact(self.request, length - 4)[12:])
+        kind = msg["MessageType"]
+        if kind == "ListDevices":
+            props = {"SerialNumber": IPHONE_UDID, "ProductID": 4776}
+            self.reply({"DeviceList": [
+                {"DeviceID": 9, "Properties": {**props, "DeviceID": 9, "ConnectionType": "USB"}},
+                {"DeviceID": 12, "Properties": {**props, "DeviceID": 12, "ConnectionType": "Network"}}]})
+        elif kind == "ReadPairRecord":
+            ok = msg["PairRecordID"] == IPHONE_UDID
+            self.reply({"PairRecordData": b"<plist/>"} if ok else {"MessageType": "Result", "Number": 2})
+        elif kind == "Connect":
+            self.reply({"MessageType": "Result", "Number": 0})
+            while True:  # the lockdown protocol: 4-byte big-endian length + plist
+                try:
+                    n, = struct.unpack(">I", _read_exact(self.request, 4))
+                except ConnectionError:
+                    return
+                req = plistlib.loads(_read_exact(self.request, n))
+                key = req.get("Key")
+                out = {"Key": key, "Value": IPHONE_VALUES[key]} if key in IPHONE_VALUES else {"Key": key,
+                                                                                             "Error": "MissingValue"}
+                body = plistlib.dumps(out)
+                self.request.sendall(struct.pack(">I", len(body)) + body)
+
+
+def start_fake_usbmux() -> tuple[socketserver.ThreadingTCPServer, tuple[str, int]]:
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), FakeMux)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address[:2]
+    return server, (str(host), int(port))
+
+
+def closed_port() -> tuple[str, int]:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return "127.0.0.1", port
 
 
 def make_png(width: int, height: int) -> bytes:
@@ -126,6 +195,18 @@ class FakeAdapter:
 
     def list_apps(self, serial: str, include_system: bool) -> list[str]:
         return ["com.example"]
+
+    def logs(self, serial: str, lines: int, contains: str | None) -> list[str]:
+        found = [x for x in ("boot ok", "MyApp started", "MyApp tap") if not contains or contains.lower() in x.lower()]
+        return found[:lines]
+
+    def crash_reports(self, serial: str) -> list[str]:
+        return ["MyApp-2026-11-15.ips"]
+
+    def pull_crash_report(self, serial: str, name: str, dest: Path) -> Path:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / name).write_text("crash")
+        return dest / name
 
     def release(self, serial: str) -> None:
         self.calls.append(("release", serial))

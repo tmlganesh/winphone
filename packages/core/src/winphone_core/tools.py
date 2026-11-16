@@ -51,6 +51,14 @@ TOOLS: dict[str, ToolSpec] = {
         sha256="b12a2c4ee8be317422451fc7dcf8ee20a71b5ea7ef9ad73ddd825a25316227a5",
         exe="scrcpy-win64-v5.0.1/scrcpy.exe",
     ),
+    # go-ios (MIT): iPhone apps, logs and crash reports from Windows. SHA-256 from the GitHub release digest.
+    "go-ios": ToolSpec(
+        name="go-ios",
+        version="1.3.2",
+        url="https://github.com/danielpaulus/go-ios/releases/download/v1.3.2/go-ios-win.zip",
+        sha256="939c6bcaafed183a92afb9f79cc11b1f935fa6389bfc94d3902e3f52c4dff3fe",
+        exe="ios.exe",
+    ),
 }
 
 
@@ -106,8 +114,8 @@ _VERSION = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 
 
 def _probe_version(name: str, path: Path) -> str | None:
-    # adb prints "Version 37.0.3-..." on its second line; scrcpy prints "scrcpy 5.0.1 <url>".
-    args = [str(path), "version"] if name == "adb" else [str(path), "--version"]
+    # adb prints "Version 37.0.3-..." on its second line; scrcpy "scrcpy 5.0.1 <url>"; go-ios {"version":"1.3.2"}.
+    args = [str(path), "--version"] if name == "scrcpy" else [str(path), "version"]
     try:
         out = subprocess.run(args, capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
@@ -122,7 +130,7 @@ def _probe_version(name: str, path: Path) -> str | None:
 
 
 # Oldest version accepted from PATH: adb 30 added `adb pair`; scrcpy 2.0 is the oldest we test flags against.
-MIN_VERSIONS: dict[str, tuple[int, ...]] = {"adb": (30, 0), "scrcpy": (2, 0)}
+MIN_VERSIONS: dict[str, tuple[int, ...]] = {"adb": (30, 0), "scrcpy": (2, 0), "go-ios": (1, 3)}
 
 
 def _supported(name: str, version: str | None) -> bool:

@@ -11,6 +11,7 @@ members = [
     "winphone-android",
     "winphone-cli",
     "winphone-core",
+    "winphone-ios",
     "winphone-workspace",
 ]
 
@@ -1226,6 +1227,7 @@ dependencies = [
     { name = "typer" },
     { name = "winphone-android" },
     { name = "winphone-core" },
+    { name = "winphone-ios" },
 ]
 
 [package.metadata]
@@ -1234,6 +1236,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "winphone-android", editable = "packages/adapters/android" },
     { name = "winphone-core", editable = "packages/core" },
+    { name = "winphone-ios", editable = "packages/adapters/ios" },
 ]
 
 [[package]]
@@ -1254,6 +1257,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "winphone-ios"
+version = "0.1.0"
+source = { editable = "packages/adapters/ios" }
+dependencies = [
+    { name = "winphone-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "winphone-core", editable = "packages/core" }]
+
+[[package]]
 name = "winphone-workspace"
 version = "0.1.0"
 source = { virtual = "." }
@@ -1261,6 +1275,7 @@ dependencies = [
     { name = "winphone-android" },
     { name = "winphone-cli" },
     { name = "winphone-core" },
+    { name = "winphone-ios" },
 ]
 
 [package.dev-dependencies]
@@ -1276,6 +1291,7 @@ requires-dist = [
     { name = "winphone-android", editable = "packages/adapters/android" },
     { name = "winphone-cli", editable = "packages/cli" },
     { name = "winphone-core", editable = "packages/core" },
+    { name = "winphone-ios", editable = "packages/adapters/ios" },
 ]
 
 [package.metadata.requires-dev]

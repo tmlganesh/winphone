@@ -18,10 +18,11 @@ from winphone_core.errors import (
     DeviceAmbiguous,
     DeviceNotFound,
     DeviceNotReady,
+    InvalidRequest,
+    ToolMissing,
     WinphoneError,
 )
 from winphone_core.models import (
-    NOT_READY_HINTS,
     Capability,
     CapabilityStatus,
     DeviceInfo,
@@ -29,10 +30,12 @@ from winphone_core.models import (
     Platform,
     ScreenshotArtifact,
     Transport,
+    not_ready_hint,
 )
 from winphone_core.observation import Observation, ObservationStore, normalize
 
 _RECEIPTS_KEPT = 128
+MAX_LOG_LINES = 2000
 
 
 class Orchestrator:
@@ -71,7 +74,7 @@ class Orchestrator:
                ) -> tuple[DeviceAdapter, DeviceInfo]:
         a, d = self._find(device_id)
         if d.state is not DeviceState.ONLINE:
-            raise DeviceNotReady(f"{d.id} is {d.state.value}", hint=NOT_READY_HINTS.get(d.state))
+            raise DeviceNotReady(f"{d.id} is {d.state.value}", hint=not_ready_hint(d.platform, d.state))
         if capability is not None:
             status = next((c for c in a.capabilities(d.serial) if c.capability is capability), None)
             if status is None or not status.supported:
@@ -86,7 +89,8 @@ class Orchestrator:
         online = [d for d in found if d.state is DeviceState.ONLINE]
         if not online and found:
             states = ", ".join(f"{d.id} is {d.state.value}" for d in found)
-            raise DeviceNotReady(f"no phone is online: {states}", hint=NOT_READY_HINTS.get(found[0].state))
+            first = found[0]
+            raise DeviceNotReady(f"no phone is online: {states}", hint=not_ready_hint(first.platform, first.state))
         if not online:
             raise DeviceNotFound("no phone found", hint="Run winphone doctor")
         if len(online) > 1:
@@ -161,6 +165,22 @@ class Orchestrator:
         a, d = self._ready(device_id, Capability.LIST_APPS)
         return a.list_apps(d.serial, include_system)
 
+    def logs(self, device_id: str, lines: int = 200, contains: str | None = None) -> list[str]:
+        if not 1 <= lines <= MAX_LOG_LINES:
+            raise InvalidRequest(f"lines must be between 1 and {MAX_LOG_LINES}")
+        a, d = self._ready(device_id, Capability.LOGS)
+        return a.logs(d.serial, lines, contains)
+
+    def crash_reports(self, device_id: str) -> list[str]:
+        a, d = self._ready(device_id, Capability.CRASH_REPORTS)
+        return a.crash_reports(d.serial)
+
+    def pull_crash_report(self, device_id: str, name: str) -> str:
+        a, d = self._ready(device_id, Capability.CRASH_REPORTS)
+        if name not in a.crash_reports(d.serial):  # a listed name only, never a path the caller made up
+            raise InvalidRequest(f"{name!r} is not one of this phone's crash reports", hint="List them first")
+        return str(a.pull_crash_report(d.serial, name, self._artifacts.folder(d.id, "crashes")))
+
     def held_count(self) -> int:
         """Holds on phones that are gone are dropped, so an unplugged phone cannot keep the daemon alive."""
         try:
@@ -190,7 +210,10 @@ class Orchestrator:
 
     # Wireless debugging is an Android (adb) feature.
     def _android(self) -> DeviceAdapter:
-        return next(a for a in self._adapters if a.platform is Platform.ANDROID)
+        adapter = next((a for a in self._adapters if a.platform is Platform.ANDROID), None)
+        if adapter is None:
+            raise ToolMissing("Android support is not loaded (adb missing)", hint="Run winphone setup")
+        return adapter
 
     def pair_wifi(self, host: str, port: int, code: str) -> None:
         self._android().pair(host, port, code)

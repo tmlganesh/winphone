@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Protocol
 
 from winphone_core.models import CapabilityStatus, DeviceInfo, Key, Platform, UiSnapshot
@@ -47,6 +48,16 @@ class DeviceAdapter(Protocol):
     def launch_app(self, serial: str, package: str) -> None: ...
 
     def list_apps(self, serial: str, include_system: bool) -> list[str]: ...
+
+    def logs(self, serial: str, lines: int, contains: str | None) -> list[str]:
+        """Recent device log lines (at most `lines`), optionally only those containing `contains`."""
+        ...
+
+    def crash_reports(self, serial: str) -> list[str]: ...
+
+    def pull_crash_report(self, serial: str, name: str, dest: Path) -> Path:
+        """Copy one listed crash report into `dest`; returns the local file."""
+        ...
 
     def release(self, serial: str) -> None:
         """Stop any helper the adapter started on the phone; a no-op if there is none."""

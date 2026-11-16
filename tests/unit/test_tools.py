@@ -86,6 +86,14 @@ def test_resolve_accepts_supported_tool_on_path(tmp_home: Path, monkeypatch: pyt
     assert r.source == "PATH" and r.version == "35.0.2"
 
 
+def test_go_ios_pin_present() -> None:
+    s = tools.TOOLS["go-ios"]
+    assert (s.version, s.exe) == ("1.3.2", "ios.exe")
+    assert s.sha256 == "939c6bcaafed183a92afb9f79cc11b1f935fa6389bfc94d3902e3f52c4dff3fe"
+    assert s.url.endswith("/v1.3.2/go-ios-win.zip")
+    assert tools.MIN_VERSIONS["go-ios"] == (1, 3)
+
+
 def test_resolve_reports_missing(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     r = resolve("scrcpy")

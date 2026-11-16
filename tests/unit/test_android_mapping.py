@@ -47,10 +47,12 @@ def test_capabilities_cover_every_capability_once() -> None:
 def test_capabilities_phase2_supported() -> None:
     c = {x.capability: x for x in android_capabilities(DeviceState.ONLINE, 34, True)}
     for cap in (Capability.SCREENSHOT, Capability.WIRELESS, Capability.OBSERVE_TREE, Capability.TAP,
-                Capability.SWIPE, Capability.TYPE, Capability.KEYS, Capability.LAUNCH_APP, Capability.LIST_APPS):
+                Capability.SWIPE, Capability.TYPE, Capability.KEYS, Capability.LAUNCH_APP, Capability.LIST_APPS,
+                Capability.LOGS):
         assert c[cap].supported, cap
-    for cap in (Capability.INSTALL_APP, Capability.LOGS, Capability.RECORD):
+    for cap in (Capability.INSTALL_APP, Capability.RECORD):
         assert not c[cap].supported and c[cap].reason == "Not built yet (Phase 3)"
+    assert not c[Capability.CRASH_REPORTS].supported and "root" in (c[Capability.CRASH_REPORTS].reason or "")
 
 
 def test_input_denied_marks_input_unsupported_with_vendor_hint() -> None:

@@ -37,6 +37,10 @@ class PairBody(WifiBody):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+class PullBody(BaseModel):
+    name: str = Field(min_length=1, max_length=512)
+
+
 class ObserveBody(BaseModel):
     screenshot: bool = False
 
@@ -133,6 +137,18 @@ def create_app(orch: Orchestrator, token: str, port: int, on_shutdown: Callable[
     @app.get("/devices/{device_id}/apps")
     def apps(device_id: str, all: bool = False) -> list[str]:  # noqa: A002 - the query parameter's name
         return orch.apps(device_id, include_system=all)
+
+    @app.get("/devices/{device_id}/logs")
+    def logs(device_id: str, lines: int = 200, contains: str | None = None) -> list[str]:
+        return orch.logs(device_id, lines=lines, contains=contains)
+
+    @app.get("/devices/{device_id}/crashes")
+    def crashes(device_id: str) -> list[str]:
+        return orch.crash_reports(device_id)
+
+    @app.post("/devices/{device_id}/crashes/pull")
+    def pull_crash(device_id: str, body: PullBody) -> dict[str, str]:
+        return {"path": orch.pull_crash_report(device_id, body.name)}
 
     @app.post("/wifi/pair")
     def pair(body: PairBody) -> dict[str, bool]:

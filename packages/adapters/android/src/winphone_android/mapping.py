@@ -26,7 +26,8 @@ INPUT_DENIED_REASON = ("The phone blocks simulated input. Xiaomi/Redmi/POCO: Dev
 _STATES = {"device": DeviceState.ONLINE, "unauthorized": DeviceState.UNAUTHORIZED}
 _BUILT = {Capability.SCREENSHOT, Capability.LIVE_VIEW, Capability.WIRELESS, Capability.OBSERVE_TREE,
           Capability.TAP, Capability.SWIPE, Capability.TYPE, Capability.KEYS, Capability.LAUNCH_APP,
-          Capability.LIST_APPS}
+          Capability.LIST_APPS, Capability.LOGS}
+CRASH_REPORTS_REASON = "Android keeps crash reports where only root can read them; use winphone logs"
 _INPUT = {Capability.TAP, Capability.SWIPE, Capability.TYPE, Capability.KEYS}
 
 
@@ -70,7 +71,9 @@ def android_capabilities(state: DeviceState, sdk: int | None, scrcpy_available: 
         return [CapabilityStatus(capability=c, supported=False, reason=reason) for c in Capability]
     out: list[CapabilityStatus] = []
     for c in Capability:
-        if c not in _BUILT:
+        if c is Capability.CRASH_REPORTS:
+            out.append(CapabilityStatus(capability=c, supported=False, reason=CRASH_REPORTS_REASON))
+        elif c not in _BUILT:
             out.append(CapabilityStatus(capability=c, supported=False, reason="Not built yet (Phase 3)"))
         elif c in _INPUT and input_denied:
             out.append(CapabilityStatus(capability=c, supported=False, reason=INPUT_DENIED_REASON))

@@ -93,5 +93,22 @@ def test_disconnect_wifi_device_drops_network_link(tmp_path: Path) -> None:
     assert ("disconnect_wifi", "10.0.0.5:5555") in fake.calls
 
 
+def test_wifi_without_android_support_is_tool_missing(tmp_path: Path) -> None:
+    from winphone_core.errors import ToolMissing
+
+    with pytest.raises(ToolMissing):
+        Orchestrator([], ArtifactStore(tmp_path)).connect_wifi("10.0.0.5", 5555)
+
+
+def test_untrusted_iphone_hint_says_trust(tmp_path: Path) -> None:
+    from winphone_core.models import Platform
+
+    fake = FakeAdapter([dev("A", DeviceState.UNAUTHORIZED).model_copy(update={"platform": Platform.IOS,
+                                                                              "id": "ios:A"})])
+    with pytest.raises(DeviceNotReady) as e:
+        orch(fake, tmp_path).screenshot("ios:A")
+    assert "Trust" in (e.value.hint or "")
+
+
 def test_live_view_returns_viewer_pid(tmp_path: Path) -> None:
     assert orch(FakeAdapter([dev("A")]), tmp_path).live_view("android:A") == 4242

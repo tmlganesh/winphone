@@ -27,6 +27,10 @@ class ArtifactStore:
         self.root = root
         self.keep = keep
 
+    def folder(self, device_id: str, sub: str) -> Path:
+        """A per-device folder for pulled files (crash reports ...)."""
+        return self.root / _safe(device_id) / _safe(sub)
+
     def save_screenshot(self, device_id: str, png: bytes) -> Path:
         folder = self.root / _safe(device_id)
         folder.mkdir(parents=True, exist_ok=True)

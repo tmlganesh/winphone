@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, NoReturn
 
 import adbutils
@@ -34,6 +35,7 @@ from winphone_core.paths import app_dir
 from winphone_core.tools import resolve
 
 from winphone_android.mapping import (
+    CRASH_REPORTS_REASON,
     INPUT_DENIED_REASON,
     KEYCODES,
     PACKAGE_RE,
@@ -268,6 +270,24 @@ class AndroidAdapter:
         out = self._adb_shell(serial, args, "list apps", timeout=30)
         return sorted(line.removeprefix("package:").strip() for line in out.splitlines()
                       if line.startswith("package:"))
+
+    def logs(self, serial: str, lines: int, contains: str | None) -> list[str]:
+        try:
+            r = subprocess.run([self._adb, "-s", serial, "logcat", "-d", "-t", str(lines)], capture_output=True,
+                               encoding="utf-8", errors="replace", timeout=30, check=False)
+        except subprocess.TimeoutExpired:
+            raise AdapterError(f"reading logs of {serial} timed out after 30 s") from None
+        if r.returncode != 0:
+            raise AdapterError(f"logcat failed on {serial}: {r.stderr.strip()[-200:]}")
+        needle = contains.lower() if contains else None
+        return [line for line in r.stdout.splitlines()
+                if line.strip() and not line.startswith("---------") and (needle is None or needle in line.lower())]
+
+    def crash_reports(self, serial: str) -> list[str]:
+        raise CapabilityUnsupported(f"Android crash reports: {CRASH_REPORTS_REASON}")
+
+    def pull_crash_report(self, serial: str, name: str, dest: Path) -> Path:
+        raise CapabilityUnsupported(f"Android crash reports: {CRASH_REPORTS_REASON}")
 
     def release(self, serial: str) -> None:
         with self._u2_lock:

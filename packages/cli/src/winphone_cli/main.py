@@ -13,10 +13,11 @@ from typing import Annotated, Any, ParamSpec, TypeVar
 
 import typer
 from pydantic import BaseModel, ValidationError
+from rich.text import Text
 from winphone_core.actions import Action, Target, Wait
 from winphone_core.client import DaemonClient, connect_daemon
 from winphone_core.errors import DaemonUnavailable, InvalidRequest, WinphoneError
-from winphone_core.models import NOT_READY_HINTS, DeviceInfo, Key
+from winphone_core.models import DeviceInfo, Key, not_ready_hint
 from winphone_core.observation import Selector, find, to_compact
 
 from winphone_cli import output
@@ -114,7 +115,7 @@ def doctor(ctx: typer.Context) -> None:
     from winphone_core.doctor import run_checks
 
     checks = run_checks()
-    marks = {"ok": "[green]ok[/green]", "warn": "[yellow]warn[/yellow]", "fail": "[red]FAIL[/red]"}
+    marks = {"ok": Text("ok", style="green"), "warn": Text("warn", style="yellow"), "fail": Text("FAIL", style="red")}
     _show(ctx, checks, lambda: output.table(["", "CHECK", "DETAIL", "FIX"],
                                             [[marks[c.status], c.name, c.detail, c.fix] for c in checks]))
     if any(c.status == "fail" for c in checks):
@@ -133,8 +134,8 @@ def devices(ctx: typer.Context) -> None:
             return
         output.table(["ID", "STATE", "TRANSPORT", "MODEL", "OS", "HELD"], _device_rows(found))
         for d in found:
-            if d.state.value in NOT_READY_HINTS:
-                output.say(f"hint: {d.id}: {NOT_READY_HINTS[d.state.value]}")
+            if hint := not_ready_hint(d.platform, d.state):
+                output.say(f"hint: {d.id}: {hint}")
 
     _show(ctx, found, human)
 
@@ -387,23 +388,75 @@ def app_launch(
          _wait(wait_text, wait_gone, wait_app, wait_timeout, launching=package))
 
 
+# --- Phase 5: logs and crash reports (Android and iPhone) ----------------------------------------
+
+crashes_app = typer.Typer(help="Crash reports on the phone (iPhone).", invoke_without_command=True)
+app.add_typer(crashes_app, name="crashes")
+
+
+@app.command()
+@handled
+def logs(
+    ctx: typer.Context,
+    device: DeviceOpt = None,
+    lines: Annotated[int, typer.Option("--lines", help="At most this many lines (1-2000).")] = 200,
+    grep: Annotated[str | None, typer.Option("--grep", help="Only lines containing this (any case).")] = None,
+) -> None:
+    """Device logs: Android's recent logcat; on an iPhone, new lines for up to 5 seconds."""
+    client = _client(ctx)
+    found = client.logs(client.resolve(device).id, lines=lines, contains=grep)
+    _show(ctx, found, lambda: output.say("\n".join(found) if found else "No log lines."))
+
+
+@crashes_app.callback()
+@handled
+def crashes(ctx: typer.Context, device: DeviceOpt = None) -> None:
+    """List crash reports (use 'crashes pull NAME' to copy one)."""
+    if ctx.invoked_subcommand:
+        return
+    client = _client(ctx)
+    found = client.crashes(client.resolve(device).id)
+    _show(ctx, found, lambda: output.say("\n".join(found) if found else "No crash reports."))
+
+
+@crashes_app.command("pull")
+@handled
+def crashes_pull(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Argument(help="A name exactly as 'winphone crashes' lists it.")],
+    device: DeviceOpt = None,
+    out: Annotated[Path | None, typer.Option("--output", "-o", help="Also copy it into this folder.")] = None,
+) -> None:
+    """Copy one crash report off the phone (kept under the WINPHONE artifacts folder)."""
+    client = _client(ctx)
+    path = Path(client.pull_crash(client.resolve(device).id, name))
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+        path = Path(shutil.copy2(path, out / path.name))
+    _show(ctx, {"path": str(path)}, lambda: output.say(str(path)))
+
+
 @daemon_app.command("run")
 @handled
 def daemon_run(ctx: typer.Context) -> None:
     """Run winphoned in the foreground (this is what auto-start launches)."""
-    from winphone_android.adapter import AndroidAdapter
     from winphone_core.artifacts import ArtifactStore
     from winphone_core.orchestrator import Orchestrator
     from winphone_core.paths import app_dir
     from winphone_core.runtime import acquire_lock, read_info, serve
+
+    from winphone_cli.adapters import load_adapters
 
     lock = acquire_lock()
     if lock is None:
         info = read_info()
         output.say(f"winphoned is already running (pid {info.pid if info else '?'}).")
         return
+    adapters, skipped = load_adapters()
+    for reason in skipped:
+        output.say(f"skipped {reason} (run winphone doctor)")
     try:
-        serve(Orchestrator([AndroidAdapter()], ArtifactStore(app_dir() / "artifacts")))
+        serve(Orchestrator(adapters, ArtifactStore(app_dir() / "artifacts")))
     finally:
         lock.close()
 

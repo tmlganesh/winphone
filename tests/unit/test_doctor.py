@@ -29,6 +29,8 @@ def test_doctor_without_adb_fails_with_fix(tmp_home: Path, monkeypatch: pytest.M
     assert checks["scrcpy"].status == "fail"
     assert checks["daemon"].status == "warn"
     assert "phones" in checks and checks["phones"].status == "fail"
+    assert checks["go-ios"].status == "warn" and "winphone setup" in (checks["go-ios"].fix or "")
+    assert "iphone support" in checks
 
 
 def test_doctor_reports_unauthorized_phone(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -55,6 +55,9 @@ def test_observe_act_apps_round_trip(tmp_path: Path) -> None:
                    wait=Wait(text_visible="Welcome", timeout_s=2), idempotency_key="k")
     assert r.outcome == "verified" and r.resolved_by == "selector"
     assert client.apps("android:A") == ["com.example"]
+    assert client.logs("android:A", lines=5, contains="tap") == ["MyApp tap"]
+    assert client.crashes("android:A") == ["MyApp-2026-11-15.ips"]
+    assert Path(client.pull_crash("android:A", "MyApp-2026-11-15.ips")).exists()
 
 
 def test_dropped_connection_is_daemon_unavailable() -> None:

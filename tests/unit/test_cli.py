@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import LOGIN, FakeAdapter, dev, sender_for
+from fakes import LOGIN, FakeAdapter, dev, sender_for, ui_xml
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner, Result
 from winphone_cli import main
@@ -48,6 +48,56 @@ def test_devices_shows_hint_for_unauthorized_phone(monkeypatch: pytest.MonkeyPat
     use_fake(monkeypatch, tmp_path, FakeAdapter([dev("A", DeviceState.UNAUTHORIZED)]))
     r = run("devices")
     assert r.exit_code == 0 and "Allow USB debugging" in r.stdout
+
+
+def test_load_adapters_skips_missing_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    from winphone_cli import adapters
+    from winphone_core.errors import ToolMissing
+
+    def no_adb() -> object:
+        raise ToolMissing("adb is not installed", hint="Run winphone setup")
+
+    monkeypatch.setattr(adapters, "AndroidAdapter", no_adb)
+    monkeypatch.setattr(adapters, "WindowsIOSAdapter", lambda: "ios-adapter")
+    loaded, skipped = adapters.load_adapters()
+    assert loaded == ["ios-adapter"] and "adb is not installed" in skipped[0]
+
+
+def test_devices_shows_trust_hint_for_iphone(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from winphone_core.models import Platform
+
+    iphone = dev("A", DeviceState.UNAUTHORIZED).model_copy(update={"platform": Platform.IOS, "id": "ios:A"})
+    use_fake(monkeypatch, tmp_path, FakeAdapter([iphone]))
+    r = run("devices")
+    assert r.exit_code == 0 and "Trust" in r.stdout and "USB debugging" not in r.stdout
+
+
+def test_logs_prints_lines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    use_fake(monkeypatch, tmp_path, FakeAdapter([dev("A")]))
+    r = run("logs", "--grep", "tap")
+    assert r.exit_code == 0 and r.stdout.strip() == "MyApp tap"
+
+
+def test_logs_on_unsupported_phone_exit_4(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    use_fake(monkeypatch, tmp_path, FakeAdapter([dev("A")], unsupported={Capability.LOGS: "no"}))
+    assert run("logs").exit_code == 4
+
+
+def test_crashes_lists_and_pulls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    use_fake(monkeypatch, tmp_path, FakeAdapter([dev("A")]))
+    assert "MyApp-2026-11-15.ips" in run("crashes").stdout
+    out = tmp_path / "copy"
+    r = run("crashes", "pull", "MyApp-2026-11-15.ips", "-o", str(out))
+    assert r.exit_code == 0 and (out / "MyApp-2026-11-15.ips").read_text() == "crash"
+    assert run("crashes", "pull", "../evil.ips").exit_code == 2
+
+
+def test_device_text_is_never_rich_markup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Screen and log text is untrusted: '[red]...' must print literally, never as formatting."""
+    screen = ui_xml({"text": "[red]alert[/red] [link=https://x]y[/link]", "bounds": "[0,0][500,100]"})
+    use_fake(monkeypatch, tmp_path, FakeAdapter([dev("A")], screens=[(screen, "com.example")]))
+    r = run("observe")
+    assert "[red]alert[/red] [link=https://x]y[/link]" in r.stdout
 
 
 def test_ambiguous_device_exit_2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
