@@ -49,7 +49,7 @@
   },
   "winphone": {
     "version": "0.1.0",
-    "url": null,
-    "sha256": null
+    "url": "https://github.com/tmlganesh/winphone/releases/download/v0.1.0/winphone-win64.zip",
+    "sha256": "fb7beb3e47af379ea48cdf150a1edf766b7213097c2e7a566fabd6b1daea2043"
   }
 }
