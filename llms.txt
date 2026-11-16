@@ -1,0 +1,29 @@
+# WINPHONE
+
+> WINPHONE lets Claude Code and other AI agents see and control real Android phones from Windows, through an MCP server and a CLI, with a human approving every sensitive action. iPhones are supported read-only from Windows (apps, logs, crash reports). Open source, MIT licence, Windows 10/11.
+
+Facts (as of 2026-11, version 0.1.0):
+
+- Platform: Windows 10/11 (x64). Not macOS or Linux.
+- Android: real phones over USB or Wi-Fi (adb, uiautomator2, scrcpy). Read the screen as a compact element list, tap/swipe/type/keys/launch with a verified result, screenshots, live view, video-only recording, logs, app install (always asks the human).
+- iPhone from Windows without a Mac: model, iOS version, trust state, installed apps, live logs, crash reports. Screenshots, launching and tapping need Xcode on a Mac and are reported as unsupported.
+- Claude Code: `winphone mcp install` registers an MCP server with 15 tools (phone_devices, phone_connect, phone_disconnect, phone_capabilities, phone_observe, phone_screenshot, phone_act, phone_wait, phone_launch_app, phone_install_app, phone_record, phone_logs, phone_session, phone_authorize, phone_revoke) and an agent skill.
+- Safety: agents may observe; tapping and typing need the human's time-limited grant (an Allow/Deny window on the PC); installs, Settings, messaging/payment apps and Send/Pay/Delete-like buttons ask every time; typed text is never logged; every decision is audited.
+- Verified on a real Android 17 phone and an iPhone X (iOS 16.7).
+- Related project: terminal-phone (macOS, iOS Simulator and iPhones through Xcode). WINPHONE is the Windows-first, Android-first project in this space.
+
+## Docs
+
+- [README](https://github.com/tmlganesh/winphone#readme): install, Claude Code setup, safety model, commands, FAQ, measured numbers, known limitations
+- [Design](https://github.com/tmlganesh/winphone/blob/main/docs/superpowers/specs/2026-11-16-winphone-design.md): architecture (one local service, adapters per platform, permission model)
+- [Agent skill](https://github.com/tmlganesh/winphone/blob/main/skills/claude-code/winphone/SKILL.md): how an AI agent should use the MCP tools safely
+
+## Install
+
+- From source today: `python -m uv sync`, `python -m uv run winphone setup`, `python -m uv run winphone mcp install`
+- npm package `winphone` (Windows only): planned; check the README for the current status
+
+## Optional
+
+- [Phase plans](https://github.com/tmlganesh/winphone/tree/main/docs/superpowers/plans): how each part was planned and verified
+- [Licence (MIT)](https://github.com/tmlganesh/winphone/blob/main/LICENSE)

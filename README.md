@@ -7,7 +7,7 @@ Windows (apps, logs, crash reports).**
 Open source (MIT) · Windows 10/11 · works with Claude Code and any MCP client · status: early (0.1.0)
 
 ```powershell
-npm install -g winphone     # until the first release is published, build from source (below)
+npm install -g winphone     # not published yet: install from source (below) for now
 winphone setup              # pinned adb, scrcpy and go-ios, SHA-256 checked
 winphone mcp install        # register with Claude Code, then start a new Claude Code session
 ```

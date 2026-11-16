@@ -1,8 +1,32 @@
 {
   "name": "winphone",
   "version": "0.1.0",
-  "description": "Drive real Android phones (and read iPhones) from Windows: a CLI and an MCP server for Claude Code.",
+  "description": "Let Claude Code and other AI agents see and control real Android phones from Windows (MCP server + CLI), with a human approving every sensitive action. iPhones read-only.",
   "license": "MIT",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude-code",
+    "android",
+    "adb",
+    "scrcpy",
+    "uiautomator2",
+    "windows",
+    "phone-automation",
+    "mobile-testing",
+    "ai-agent",
+    "iphone"
+  ],
+  "homepage": "https://github.com/tmlganesh/winphone#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tmlganesh/winphone.git",
+    "directory": "npm/winphone"
+  },
+  "bugs": {
+    "url": "https://github.com/tmlganesh/winphone/issues"
+  },
   "os": [
     "win32"
   ],
