@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from fakes import FakeAdapter, dev
+from fakes import FakeAdapter, dev, permissions_for
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from winphone_core.artifacts import ArtifactStore
@@ -24,7 +24,8 @@ def shutdowns() -> list[int]:
 @pytest.fixture
 def app(tmp_path: Path, shutdowns: list[int]) -> FastAPI:
     orch = Orchestrator([FakeAdapter([dev("A")])], ArtifactStore(tmp_path))
-    return create_app(orch, token=T, port=PORT, on_shutdown=lambda: shutdowns.append(1))
+    return create_app(orch, token=T, port=PORT, on_shutdown=lambda: shutdowns.append(1),
+                      permissions=permissions_for(tmp_path))
 
 
 @pytest.fixture
@@ -84,7 +85,7 @@ class ExplodingAdapter(FakeAdapter):
 def test_unexpected_error_is_adapter_error_without_details(tmp_path: Path) -> None:
     """Review finding 2: a non-WinphoneError became HTTP 500 -> 'daemon unavailable' (exit 7)."""
     orch = Orchestrator([ExplodingAdapter([dev("A")])], ArtifactStore(tmp_path))
-    app = create_app(orch, token=T, port=PORT, on_shutdown=lambda: None)
+    app = create_app(orch, token=T, port=PORT, on_shutdown=lambda: None, permissions=permissions_for(tmp_path))
     c = TestClient(app, base_url=f"http://127.0.0.1:{PORT}", raise_server_exceptions=False)
     r = c.post("/devices/android:A/screenshot", headers=auth(T))
     assert r.status_code == 500
@@ -100,7 +101,7 @@ def test_observe_route_returns_elements(c: TestClient) -> None:
 
 def test_act_route_returns_receipt(c: TestClient) -> None:
     body = {"action": {"kind": "tap", "target": {"selector": {"text": "Sign in"}}}}
-    r = c.post("/devices/android:A/act", headers=auth(T), json=body)
+    r = c.post("/devices/android:A/act", headers={**auth(T), "X-Winphone-Client": "human"}, json=body)
     assert r.status_code == 200 and r.json()["outcome"] == "verified"
 
 

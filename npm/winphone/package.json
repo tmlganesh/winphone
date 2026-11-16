@@ -1,0 +1,31 @@
+{
+  "name": "winphone",
+  "version": "0.1.0",
+  "description": "Drive real Android phones (and read iPhones) from Windows: a CLI and an MCP server for Claude Code.",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "bin": {
+    "winphone": "bin/winphone.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "winphone": {
+    "version": "0.1.0",
+    "url": null,
+    "sha256": null
+  }
+}

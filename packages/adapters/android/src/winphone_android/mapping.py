@@ -26,7 +26,7 @@ INPUT_DENIED_REASON = ("The phone blocks simulated input. Xiaomi/Redmi/POCO: Dev
 _STATES = {"device": DeviceState.ONLINE, "unauthorized": DeviceState.UNAUTHORIZED}
 _BUILT = {Capability.SCREENSHOT, Capability.LIVE_VIEW, Capability.WIRELESS, Capability.OBSERVE_TREE,
           Capability.TAP, Capability.SWIPE, Capability.TYPE, Capability.KEYS, Capability.LAUNCH_APP,
-          Capability.LIST_APPS, Capability.LOGS}
+          Capability.LIST_APPS, Capability.LOGS, Capability.INSTALL_APP, Capability.RECORD}
 CRASH_REPORTS_REASON = "Android keeps crash reports where only root can read them; use winphone logs"
 _INPUT = {Capability.TAP, Capability.SWIPE, Capability.TYPE, Capability.KEYS}
 
@@ -77,7 +77,7 @@ def android_capabilities(state: DeviceState, sdk: int | None, scrcpy_available: 
             out.append(CapabilityStatus(capability=c, supported=False, reason="Not built yet (Phase 3)"))
         elif c in _INPUT and input_denied:
             out.append(CapabilityStatus(capability=c, supported=False, reason=INPUT_DENIED_REASON))
-        elif c is Capability.LIVE_VIEW and not scrcpy_available:
+        elif c in (Capability.LIVE_VIEW, Capability.RECORD) and not scrcpy_available:
             out.append(CapabilityStatus(capability=c, supported=False,
                                         reason="scrcpy not installed: run winphone setup"))
         elif c is Capability.WIRELESS:

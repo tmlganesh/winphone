@@ -48,10 +48,10 @@ def test_capabilities_phase2_supported() -> None:
     c = {x.capability: x for x in android_capabilities(DeviceState.ONLINE, 34, True)}
     for cap in (Capability.SCREENSHOT, Capability.WIRELESS, Capability.OBSERVE_TREE, Capability.TAP,
                 Capability.SWIPE, Capability.TYPE, Capability.KEYS, Capability.LAUNCH_APP, Capability.LIST_APPS,
-                Capability.LOGS):
+                Capability.LOGS, Capability.INSTALL_APP, Capability.RECORD):
         assert c[cap].supported, cap
-    for cap in (Capability.INSTALL_APP, Capability.RECORD):
-        assert not c[cap].supported and c[cap].reason == "Not built yet (Phase 3)"
+    no_scrcpy = {x.capability: x for x in android_capabilities(DeviceState.ONLINE, 34, False)}
+    assert not no_scrcpy[Capability.RECORD].supported
     assert not c[Capability.CRASH_REPORTS].supported and "root" in (c[Capability.CRASH_REPORTS].reason or "")
 
 

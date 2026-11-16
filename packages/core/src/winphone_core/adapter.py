@@ -53,6 +53,14 @@ class DeviceAdapter(Protocol):
         """Recent device log lines (at most `lines`), optionally only those containing `contains`."""
         ...
 
+    def install_app(self, serial: str, apk: Path) -> None:
+        """Install (or update) an app package that exists on this PC."""
+        ...
+
+    def record(self, serial: str, seconds: int, dest: Path) -> Path:
+        """Record the screen for `seconds` into a new file under `dest`; returns it."""
+        ...
+
     def crash_reports(self, serial: str) -> list[str]: ...
 
     def pull_crash_report(self, serial: str, name: str, dest: Path) -> Path:

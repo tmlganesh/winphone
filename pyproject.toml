@@ -2,18 +2,25 @@
 name = "winphone-workspace"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["winphone-core", "winphone-android", "winphone-ios", "winphone-cli"]
+dependencies = ["winphone-core", "winphone-android", "winphone-ios", "winphone-mcp", "winphone-cli"]
 
 [dependency-groups]
-dev = ["pytest", "ruff", "mypy", "httpx"]  # httpx: FastAPI's TestClient only
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+    "httpx",
+    "pyinstaller>=6.22.3",
+]  # httpx: FastAPI's TestClient only
 
 [tool.uv.workspace]
-members = ["packages/core", "packages/adapters/android", "packages/adapters/ios", "packages/cli"]
+members = ["packages/core", "packages/adapters/android", "packages/adapters/ios", "packages/mcp", "packages/cli"]
 
 [tool.uv.sources]
 winphone-core = { workspace = true }
 winphone-android = { workspace = true }
 winphone-ios = { workspace = true }
+winphone-mcp = { workspace = true }
 winphone-cli = { workspace = true }
 
 [tool.pytest.ini_options]

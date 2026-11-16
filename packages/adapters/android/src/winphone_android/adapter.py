@@ -283,6 +283,36 @@ class AndroidAdapter:
         return [line for line in r.stdout.splitlines()
                 if line.strip() and not line.startswith("---------") and (needle is None or needle in line.lower())]
 
+    def install_app(self, serial: str, apk: Path) -> None:
+        try:
+            r = subprocess.run([self._adb, "-s", serial, "install", "-r", str(apk)], capture_output=True,
+                               encoding="utf-8", errors="replace", timeout=300, check=False)
+        except subprocess.TimeoutExpired:
+            raise OutcomeUnknown(f"installing {apk.name} timed out after 300 s; check the phone") from None
+        out = (r.stdout + r.stderr).strip()
+        if r.returncode != 0 or "Success" not in out:
+            failure = re.search(r"Failure \[[^\]]+\]", out)
+            raise AdapterError(f"installing {apk.name} failed: {failure.group(0) if failure else out[-200:]}")
+
+    def record(self, serial: str, seconds: int, dest: Path) -> Path:
+        scrcpy = resolve("scrcpy")
+        if scrcpy.path is None:
+            raise ToolMissing("scrcpy is not installed", hint="Run winphone setup")
+        dest.mkdir(parents=True, exist_ok=True)
+        out = dest / f"{time.strftime('%Y%m%d-%H%M%S')}-{serial.replace(':', '_')}.mp4"
+        # Video only (audio could capture calls or media) and no control channel (it would also sync the
+        # phone's clipboard to this PC).
+        cmd = [str(scrcpy.path), "--serial", serial, "--no-window", "--no-audio", "--no-control",
+               f"--record={out}", f"--time-limit={seconds}"]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=seconds + 30, check=False,
+                           env={**os.environ, "ADB": self._adb})
+        except subprocess.TimeoutExpired:
+            raise AdapterError(f"recording did not finish within {seconds + 30} s") from None
+        if not out.is_file() or out.stat().st_size == 0:
+            raise AdapterError("scrcpy finished but wrote no recording", hint="Run winphone view to check scrcpy")
+        return out
+
     def crash_reports(self, serial: str) -> list[str]:
         raise CapabilityUnsupported(f"Android crash reports: {CRASH_REPORTS_REASON}")
 

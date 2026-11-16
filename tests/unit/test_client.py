@@ -17,6 +17,16 @@ def test_stale_daemon_file_respawns(tmp_home: Path) -> None:
     assert calls == [1]
 
 
+def test_daemon_command_from_source_and_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    from winphone_core.client import daemon_command
+
+    assert daemon_command() == [sys.executable, "-m", "winphone_cli", "daemon", "run"]
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert daemon_command() == [sys.executable, "daemon", "run"]  # winphone.exe has no `-m`
+
+
 def test_no_autostart_raises_without_spawning(tmp_home: Path) -> None:
     calls: list[int] = []
     with pytest.raises(DaemonUnavailable):
@@ -38,7 +48,7 @@ def test_non_json_error_is_daemon_unavailable() -> None:
 
 
 def test_observe_act_apps_round_trip(tmp_path: Path) -> None:
-    from fakes import FakeAdapter, dev, sender_for
+    from fakes import FakeAdapter, dev, permissions_for, sender_for
     from fastapi.testclient import TestClient
     from winphone_core.actions import Action, Target, Wait
     from winphone_core.artifacts import ArtifactStore
@@ -46,7 +56,8 @@ def test_observe_act_apps_round_trip(tmp_path: Path) -> None:
     from winphone_core.orchestrator import Orchestrator
     from winphone_core.server import create_app
 
-    app = create_app(Orchestrator([FakeAdapter([dev("A")])], ArtifactStore(tmp_path)), "t", 4557, lambda: None)
+    app = create_app(Orchestrator([FakeAdapter([dev("A")])], ArtifactStore(tmp_path)), "t", 4557, lambda: None,
+                     permissions_for(tmp_path))
     client = DaemonClient(sender_for(TestClient(app, base_url="http://127.0.0.1:4557",
                                                 headers={"Authorization": "Bearer t"})))
     obs = client.observe("android:A")
@@ -73,7 +84,7 @@ def test_http_sender_talks_to_a_real_socket(tmp_path: Path) -> None:
     import threading
 
     import uvicorn
-    from fakes import FakeAdapter, dev
+    from fakes import FakeAdapter, dev, permissions_for
     from winphone_core.artifacts import ArtifactStore
     from winphone_core.orchestrator import Orchestrator
     from winphone_core.server import create_app
@@ -82,7 +93,7 @@ def test_http_sender_talks_to_a_real_socket(tmp_path: Path) -> None:
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     orch = Orchestrator([FakeAdapter([dev("A")])], ArtifactStore(tmp_path))
-    app = create_app(orch, "tok", port, lambda: None)
+    app = create_app(orch, "tok", port, lambda: None, permissions_for(tmp_path))
     server = uvicorn.Server(uvicorn.Config(app, log_level="error"))
     threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True).start()
     try:

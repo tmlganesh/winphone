@@ -214,5 +214,11 @@ class WindowsIOSAdapter:
     def launch_app(self, serial: str, package: str) -> None:
         self._unsupported(Capability.LAUNCH_APP)
 
+    def install_app(self, serial: str, apk: Path) -> None:
+        self._unsupported(Capability.INSTALL_APP)
+
+    def record(self, serial: str, seconds: int, dest: Path) -> Path:
+        self._unsupported(Capability.RECORD)
+
     def release(self, serial: str) -> None:
         """No helper runs on the iPhone."""

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import LOGIN, FakeAdapter, dev, sender_for, ui_xml
+from fakes import LOGIN, FakeAdapter, dev, permissions_for, sender_for, ui_xml
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner, Result
 from winphone_cli import main
@@ -18,7 +18,7 @@ PORT = 4556
 
 def use_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake: FakeAdapter) -> None:
     app = create_app(Orchestrator([fake], ArtifactStore(tmp_path / "art")), token="t", port=PORT,
-                     on_shutdown=lambda: None)
+                     on_shutdown=lambda: None, permissions=permissions_for(tmp_path))
     http = TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers={"Authorization": "Bearer t"})
 
     def fake_connect(**kwargs: Any) -> DaemonClient:
@@ -98,6 +98,58 @@ def test_device_text_is_never_rich_markup(monkeypatch: pytest.MonkeyPatch, tmp_p
     use_fake(monkeypatch, tmp_path, FakeAdapter([dev("A")], screens=[(screen, "com.example")]))
     r = run("observe")
     assert "[red]alert[/red] [link=https://x]y[/link]" in r.stdout
+
+
+def test_console_decides_client_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    from winphone_core.permissions import ClientKind
+
+    monkeypatch.setattr(main, "_stdin_is_console", lambda: True)
+    assert main._kind() is ClientKind.HUMAN
+    monkeypatch.setattr(main, "_stdin_is_console", lambda: False)
+    assert main._kind() is ClientKind.AGENT
+
+
+def test_mcp_install_registers_with_claude_and_copies_the_skill(monkeypatch: pytest.MonkeyPatch,
+                                                                tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    from winphone_cli import mcp_install
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mcp_install.shutil, "which", lambda name: "C:/bin/claude.cmd")
+    monkeypatch.setattr(mcp_install.subprocess, "run",
+                        lambda args, **kw: calls.append(args) or subprocess.CompletedProcess(args, 0, "ok", ""))
+    monkeypatch.setattr(mcp_install, "HOME", tmp_path)
+    r = run("mcp", "install")
+    assert r.exit_code == 0, r.stdout + r.stderr
+    assert ["C:/bin/claude.cmd", "mcp", "add", "--scope", "user", "winphone", "--",
+            sys.executable, "-m", "winphone_cli", "mcp"] in calls
+    assert (tmp_path / ".claude" / "skills" / "winphone" / "SKILL.md").read_text(encoding="utf-8").startswith("---")
+    assert run("mcp", "uninstall").exit_code == 0
+    assert ["C:/bin/claude.cmd", "mcp", "remove", "--scope", "user", "winphone"] in calls
+    assert not (tmp_path / ".claude" / "skills" / "winphone").exists()
+
+
+def test_mcp_install_without_claude_shows_the_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from winphone_cli import mcp_install
+
+    monkeypatch.setattr(mcp_install.shutil, "which", lambda name: None)
+    monkeypatch.setattr(mcp_install, "HOME", tmp_path)
+    r = run("mcp", "install")
+    assert r.exit_code == 1 and "claude mcp add --scope user winphone" in r.stderr
+
+
+def test_app_install_record_and_authorize(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    use_fake(monkeypatch, tmp_path, FakeAdapter([dev("A")]))
+    apk = tmp_path / "MyApp.apk"
+    apk.write_bytes(b"PK")
+    assert run("app", "install", str(apk)).exit_code == 0
+    r = run("record", "--seconds", "3")
+    assert r.exit_code == 0 and r.stdout.strip().endswith(".mp4")
+    assert "granted" in run("authorize", "grant", "--minutes", "5").stdout
+    assert "android:A" in run("authorize", "list").stdout
+    assert "revoked 1" in run("authorize", "revoke").stdout
 
 
 def test_ambiguous_device_exit_2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import shutil
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from winphone_core.client import DaemonClient, connect_daemon
 from winphone_core.errors import DaemonUnavailable, InvalidRequest, WinphoneError
 from winphone_core.models import DeviceInfo, Key, not_ready_hint
 from winphone_core.observation import Selector, find, to_compact
+from winphone_core.permissions import ClientKind
 
 from winphone_cli import output
 
@@ -69,8 +71,28 @@ def main(
     ctx.obj = Opts(json=json_out, timeout=timeout)
 
 
+def _stdin_is_console() -> bool:
+    """True only for a real Windows console. `isatty()` is not enough: it is also True when stdin is the
+    NUL device, which is how agent shells (Claude Code's tools) run commands."""
+    try:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        mode = ctypes.c_uint32()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(mode)))
+    except (AttributeError, OSError, ValueError):  # no stdin, not a real file, or not Windows
+        return False
+
+
+def _kind() -> ClientKind:
+    """Human only when typed in a real console. A script, CI job or an agent's shell has no console on
+    stdin, so it gets agent rules (otherwise an agent could bypass MCP permissions via the CLI)."""
+    return ClientKind.HUMAN if _stdin_is_console() else ClientKind.AGENT
+
+
 def _client(ctx: typer.Context) -> DaemonClient:
-    return connect_daemon(call_timeout=_opts(ctx).timeout)
+    return connect_daemon(call_timeout=_opts(ctx).timeout, client_kind=_kind())
 
 
 def _host_port(value: str) -> tuple[str, int]:
@@ -273,7 +295,7 @@ def _target(ref: str | None, text: str | None = None, desc: str | None = None, r
 
 def _act(ctx: typer.Context, device: str | None, action: Action, wait: Wait | None) -> None:
     budget = (wait.timeout_s if wait else 10.0) + 30  # the daemon call must outlive the wait
-    client = connect_daemon(call_timeout=max(_opts(ctx).timeout, budget))
+    client = connect_daemon(call_timeout=max(_opts(ctx).timeout, budget), client_kind=_kind())
     r = client.act(client.resolve(device).id, action, wait=wait)
     _show(ctx, r, lambda: output.say(f"{r.outcome}: {r.evidence} ({r.target_ref or '-'}, obs {r.observation_id}, "
                                      f"{r.duration_ms} ms)"))
@@ -434,6 +456,107 @@ def crashes_pull(
         out.mkdir(parents=True, exist_ok=True)
         path = Path(shutil.copy2(path, out / path.name))
     _show(ctx, {"path": str(path)}, lambda: output.say(str(path)))
+
+
+# --- Phase 3: Claude Code (MCP), permissions, install, record ----------------------------------
+
+mcp_app = typer.Typer(help="Use WINPHONE from Claude Code. With no subcommand: serve MCP over stdio.",
+                      invoke_without_command=True)
+app.add_typer(mcp_app, name="mcp")
+authorize_app = typer.Typer(no_args_is_help=True, help="Let an AI agent interact with a phone, or take it back.")
+app.add_typer(authorize_app, name="authorize")
+
+
+@mcp_app.callback()
+def mcp(ctx: typer.Context) -> None:
+    """Serve the MCP tools over stdio (this is what Claude Code starts). Prints nothing else to stdout."""
+    if ctx.invoked_subcommand:
+        return
+    from winphone_mcp.server import main as serve_mcp
+
+    serve_mcp()
+
+
+def _say_lines(lines: list[str]) -> None:
+    for line in lines:
+        output.say(line)
+
+
+@mcp_app.command("install")
+@handled
+def mcp_install_cmd(ctx: typer.Context) -> None:
+    """Register WINPHONE with Claude Code (user scope) and install its agent skill."""
+    from winphone_cli import mcp_install
+
+    _say_lines(mcp_install.install())
+
+
+@mcp_app.command("status")
+@handled
+def mcp_status_cmd(ctx: typer.Context) -> None:
+    """Is WINPHONE registered with Claude Code?"""
+    from winphone_cli import mcp_install
+
+    _say_lines(mcp_install.status())
+
+
+@mcp_app.command("uninstall")
+@handled
+def mcp_uninstall_cmd(ctx: typer.Context) -> None:
+    """Remove WINPHONE and its skill from Claude Code."""
+    from winphone_cli import mcp_install
+
+    _say_lines(mcp_install.uninstall())
+
+
+@authorize_app.command("grant")
+@handled
+def authorize_grant(ctx: typer.Context, device: DeviceOpt = None,
+                    minutes: Annotated[int, typer.Option("--minutes", help="How long (1-240).")] = 30) -> None:
+    """Let an AI agent tap, swipe and type on a phone for a while (you confirm in a window)."""
+    g = _client(ctx).authorize(device, minutes)
+    _show(ctx, g, lambda: output.say(f"granted: agents may interact with {g['device']} for {minutes} minutes"))
+
+
+@authorize_app.command("list")
+@handled
+def authorize_list(ctx: typer.Context) -> None:
+    """Show which phones agents may interact with, and until when."""
+    grants = _client(ctx).grants()
+    _show(ctx, grants, lambda: output.table(["PHONE", "UNTIL"], [
+        [g["device"], time.strftime("%H:%M", time.localtime(g["expires_at"]))] for g in grants])
+          if grants else output.say("No grants: agents may only observe."))
+
+
+@authorize_app.command("revoke")
+@handled
+def authorize_revoke(ctx: typer.Context, device: DeviceOpt = None) -> None:
+    """Take an agent's permission back (all phones without --device)."""
+    n = _client(ctx).revoke(device)
+    _show(ctx, {"revoked": n}, lambda: output.say(f"revoked {n} grant(s)"))
+
+
+@app_app.command("install")
+@handled
+def app_install(
+    ctx: typer.Context,
+    apk: Annotated[Path, typer.Argument(help="An .apk file on this PC.")],
+    device: DeviceOpt = None,
+) -> None:
+    """Install (or update) an app. Always asks you to confirm in a window."""
+    client = connect_daemon(call_timeout=max(_opts(ctx).timeout, 400), client_kind=_kind())
+    name = client.install_app(client.resolve(device).id, str(apk.resolve()))
+    _show(ctx, {"installed": name}, lambda: output.say(f"installed {name}"))
+
+
+@app.command()
+@handled
+def record(ctx: typer.Context, device: DeviceOpt = None,
+           seconds: Annotated[int, typer.Option("--seconds", help="1-60 seconds, video only.")] = 10) -> None:
+    """Record the screen into an MP4 file (kept under the WINPHONE artifacts folder)."""
+    client = connect_daemon(call_timeout=max(_opts(ctx).timeout, seconds + 60), client_kind=_kind())
+    path = client.record(client.resolve(device).id, seconds)
+    _show(ctx, {"path": path}, lambda: output.say(path))
 
 
 @daemon_app.command("run")

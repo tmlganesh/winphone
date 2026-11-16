@@ -72,6 +72,9 @@ def serve(orch: Orchestrator, idle_limit: float = IDLE_LIMIT_S) -> None:
     # Imported here so clients (CLI, MCP) never pay for FastAPI and uvicorn.
     import uvicorn
 
+    from winphone_core.approval_window import confirm_window
+    from winphone_core.audit import AuditLog
+    from winphone_core.permissions import PermissionManager, SensitivityPolicy
     from winphone_core.server import create_app
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -82,7 +85,9 @@ def serve(orch: Orchestrator, idle_limit: float = IDLE_LIMIT_S) -> None:
     def stop_server() -> None:
         server.should_exit = True
 
-    app = create_app(orch, token, port, on_shutdown=stop_server)
+    permissions = PermissionManager(confirm=confirm_window, audit=AuditLog(app_dir() / "audit.jsonl"),
+                                    policy=SensitivityPolicy.default())
+    app = create_app(orch, token, port, on_shutdown=stop_server, permissions=permissions)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False))
     stop = threading.Event()
 

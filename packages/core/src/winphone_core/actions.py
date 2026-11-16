@@ -47,7 +47,7 @@ class Action(BaseModel):
     target: Target | None = None
     direction: Literal["up", "down", "left", "right"] | None = None
     to: tuple[int, int] | None = None
-    text: str | None = Field(default=None, repr=False)
+    text: str | None = Field(default=None, repr=False, max_length=10_000)
     key: Key | None = None
     package: str | None = Field(default=None, pattern=PACKAGE_PATTERN)
 
@@ -85,7 +85,7 @@ class Wait(BaseModel):
 class Receipt(BaseModel):
     action_id: str
     device_id: str
-    kind: Kind
+    kind: Literal["tap", "swipe", "type", "press", "launch", "wait"]
     target_ref: str | None
     resolved_by: Literal["ref", "reresolved", "selector", "point"] | None
     before_revision: str
@@ -201,22 +201,57 @@ def _wait(w: Wait, before: Observation, observe: Observe) -> tuple[bool, str, Ob
         time.sleep(POLL_S)
 
 
+def wait_only(wait: Wait, *, observe: Observe, record: Callable[[Observation], None]) -> Receipt:
+    """Watch the screen until the condition holds or time runs out. Sends no input."""
+    started = time.monotonic()
+    fresh = observe()
+    ok, evidence, after = _wait(wait, fresh, observe)
+    record(after)
+    return Receipt(action_id=uuid.uuid4().hex[:12], device_id=fresh.device_id, kind="wait", target_ref=None,
+                   resolved_by=None, before_revision=fresh.revision, after_revision=after.revision,
+                   outcome="verified" if ok else "not_verified", evidence=evidence,
+                   duration_ms=int((time.monotonic() - started) * 1000), observation_id=after.observation_id)
+
+
 def default_wait(action: Action) -> Wait:
     if action.kind == "launch" and action.package is not None:
         return Wait(app_foreground=action.package, timeout_s=10)
     return Wait(revision_changed=True, timeout_s=DEFAULT_WAIT_S)
 
 
+# Raises PermissionDenied, or returns True when a human was just asked (and said yes) in a window.
+Authorize = Callable[[Action, Element | None, Observation], bool]
+
+
+def _still_there(el: Element | None, before: Observation, again: Observation) -> Element | None | bool:
+    """After an approval window, the screen the human approved must still be the one we act on."""
+    if again.foreground_app != before.foreground_app:
+        return False
+    if el is None:
+        return again.revision == before.revision
+    return next((e for e in again.elements if _identity(e) == _identity(el)), False)
+
+
 def run(action: Action, wait: Wait | None, *, adapter: DeviceAdapter, serial: str, observe: Observe,
-        previous: Previous, record: Callable[[Observation], None]) -> Receipt:
+        previous: Previous, record: Callable[[Observation], None], authorize: Authorize | None = None) -> Receipt:
     """`observe` must not publish its observations as the caller's latest; `record` keeps the one a
-    receipt points at, so it can be targeted by observation_id."""
+    receipt points at, so it can be targeted by observation_id. `authorize` sees the resolved target and
+    the screen it is on, and raises PermissionDenied before anything is sent."""
     started = time.monotonic()
     # Look up what the caller saw before observing again: the fresh observation becomes "latest".
     target = action.target
     base = previous(target.observation_id) if target is not None and target.ref is not None else None
     fresh = observe()
     el, point, how = _resolve(target, fresh, base)
+    if authorize is not None and authorize(action, el, fresh):
+        again = observe()  # the human may have taken a while: never act on a screen they did not approve
+        same = _still_there(el, fresh, again)
+        if same is False:
+            raise StaleReference("the screen changed while waiting for approval; nothing was sent",
+                                 hint=f"Observe again (observation {again.observation_id}) and retry")
+        if isinstance(same, Element):
+            el, point = same, same.center
+        fresh = again
 
     def receipt(outcome: Literal["verified", "not_verified", "unknown", "failed"], evidence: str,
                 after: Observation) -> Receipt:

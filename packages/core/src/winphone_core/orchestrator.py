@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import shutil
 import threading
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -36,6 +37,7 @@ from winphone_core.observation import Observation, ObservationStore, normalize
 
 _RECEIPTS_KEPT = 128
 MAX_LOG_LINES = 2000
+MAX_RECORD_S = 60
 
 
 class Orchestrator:
@@ -142,7 +144,7 @@ class Orchestrator:
         return obs
 
     def act(self, device_id: str, action: Action, wait: Wait | None = None,
-            idempotency_key: str | None = None) -> Receipt:
+            idempotency_key: str | None = None, authorize: actions.Authorize | None = None) -> Receipt:
         a, d = self._ready(device_id, actions.CAPABILITY[action.kind])
         with self._device_lock(d.id):
             if idempotency_key is not None and idempotency_key in self._receipts:
@@ -154,16 +156,55 @@ class Orchestrator:
                 return self._store.get(d.id, observation_id)
 
             receipt = actions.run(action, wait, adapter=a, serial=d.serial, observe=lambda: self._observe(a, d),
-                                  previous=previous, record=lambda obs: self._store.put(obs, latest=False))
+                                  previous=previous, record=lambda obs: self._store.put(obs, latest=False),
+                                  authorize=authorize)
             if idempotency_key is not None:
                 self._receipts[idempotency_key] = receipt
                 while len(self._receipts) > _RECEIPTS_KEPT:
                     self._receipts.popitem(last=False)
         return receipt
 
+    def wait(self, device_id: str, wait: Wait) -> Receipt:
+        a, d = self._ready(device_id, Capability.OBSERVE_TREE)
+        with self._device_lock(d.id):
+            return actions.wait_only(wait, observe=lambda: self._observe(a, d),
+                                     record=lambda obs: self._store.put(obs, latest=False))
+
     def apps(self, device_id: str, include_system: bool = False) -> list[str]:
         a, d = self._ready(device_id, Capability.LIST_APPS)
         return a.list_apps(d.serial, include_system)
+
+    def require(self, device_id: str, capability: Capability) -> DeviceInfo:
+        """The phone is online and can do this now (checked before a human is asked to approve it)."""
+        return self._ready(device_id, capability)[1]
+
+    def stage_apk(self, device_id: str, apk: str) -> Path:
+        """Check the file and copy it into WINPHONE's folder. Network paths are refused before they are
+        touched (opening \\\\host\\share would make Windows authenticate to that host)."""
+        path = Path(apk)
+        if apk.startswith(("\\\\", "//")) or not path.is_absolute() or not path.drive or path.drive.startswith("\\"):
+            raise InvalidRequest("give the full path of an .apk on this PC's own drives (no network paths)")
+        if path.suffix.lower() != ".apk" or not path.is_file():
+            raise InvalidRequest(f"not an existing .apk file on this PC: {apk}")
+        d = self.resolve(device_id)
+        dest = self._artifacts.folder(d.id, "installs")
+        dest.mkdir(parents=True, exist_ok=True)
+        return Path(shutil.copy2(path, dest / path.name))
+
+    def install_staged(self, device_id: str, staged: Path) -> DeviceInfo:
+        """The caller (the daemon route) has already obtained the human's approval: installs are sensitive."""
+        a, d = self._ready(device_id, Capability.INSTALL_APP)
+        a.install_app(d.serial, staged)
+        return d
+
+    def install_app(self, device_id: str, apk: str) -> DeviceInfo:
+        return self.install_staged(device_id, self.stage_apk(device_id, apk))
+
+    def record(self, device_id: str, seconds: int) -> str:
+        if not 1 <= seconds <= MAX_RECORD_S:
+            raise InvalidRequest(f"seconds must be between 1 and {MAX_RECORD_S}")
+        a, d = self._ready(device_id, Capability.RECORD)
+        return str(a.record(d.serial, seconds, self._artifacts.folder(d.id, "recordings")))
 
     def logs(self, device_id: str, lines: int = 200, contains: str | None = None) -> list[str]:
         if not 1 <= lines <= MAX_LOG_LINES:

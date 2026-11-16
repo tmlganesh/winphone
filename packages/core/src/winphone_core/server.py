@@ -15,10 +15,11 @@ from pydantic import BaseModel, Field
 
 from winphone_core import __version__
 from winphone_core.actions import Action, Receipt, Wait
-from winphone_core.errors import AdapterError, DeviceNotFound, WinphoneError
-from winphone_core.models import CapabilityStatus, DeviceInfo, ScreenshotArtifact
-from winphone_core.observation import Observation
+from winphone_core.errors import AdapterError, DeviceNotFound, PermissionDenied, WinphoneError
+from winphone_core.models import Capability, CapabilityStatus, DeviceInfo, ScreenshotArtifact
+from winphone_core.observation import Element, Observation
 from winphone_core.orchestrator import Orchestrator
+from winphone_core.permissions import CLIENT_HEADER, ClientKind, PermissionManager, Tier, client_kind, quoted
 
 TAURI_ORIGINS = frozenset({"tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"})
 _HOST = r"^[A-Za-z0-9][A-Za-z0-9.\-]*$"  # IPv4 or hostname; never starts with '-', so never an adb flag
@@ -51,11 +52,62 @@ class ActBody(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=128)
 
 
+class InstallBody(BaseModel):
+    apk: str = Field(min_length=1, max_length=1024)
+
+
+class RecordBody(BaseModel):
+    seconds: int = Field(default=10, ge=1, le=60)
+
+
+class AuthorizeBody(BaseModel):
+    device: str | None = None
+    minutes: int = Field(default=30, ge=1, le=240)
+
+
+class RevokeBody(BaseModel):
+    device: str | None = None
+
+
 def _deny(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse({"error": code, "message": message, "hint": None}, status_code=status)
 
 
-def create_app(orch: Orchestrator, token: str, port: int, on_shutdown: Callable[[], None]) -> FastAPI:
+def _labels(action: Action, el: Element | None, fresh: Observation) -> list[str]:
+    """Every text and description that the input could be aimed at: the target itself, anything drawn
+    inside it, and anything under the tapped point (a point tap has no target element)."""
+    point = el.center if el is not None else (action.target.point if action.target is not None else None)
+    found: list[str | None] = [el.text, el.desc] if el is not None else []
+    for e in fresh.elements:
+        x1, y1, x2, y2 = e.bounds
+        inside = el is not None and el.bounds[0] <= x1 and el.bounds[1] <= y1 and x2 <= el.bounds[2] \
+            and y2 <= el.bounds[3]
+        under = point is not None and x1 <= point[0] < x2 and y1 <= point[1] < y2
+        if inside or under:
+            found += [e.text, e.desc]
+    return list(dict.fromkeys(s for s in found if s))
+
+
+def _describe(action: Action, el: Element | None, app: str | None, labels: list[str]) -> str:
+    """What the human is asked about. Typed text never appears (only its length), nor the field's text."""
+    where = f" in {app}" if app else ""
+    if action.kind == "type":
+        name = (el.desc or (el.resource_id or "").split(":id/")[-1]) if el is not None else ""
+        return f"type {len(action.text or '')} characters into {quoted(name) or 'the focused field'}{where}"
+    label = quoted(labels[0]) if labels else ""
+    if action.kind == "launch":
+        return f"launch {action.package}"
+    if action.kind == "press":
+        return f"press {action.key.value if action.key else '?'}{where}"
+    return f"{action.kind} {label}{where}".replace("  ", " ")
+
+
+def _client(request: Request) -> ClientKind:
+    return client_kind(request.headers.get(CLIENT_HEADER))
+
+
+def create_app(orch: Orchestrator, token: str, port: int, on_shutdown: Callable[[], None],
+               permissions: PermissionManager) -> FastAPI:
     app = FastAPI(title="winphoned", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.last_request = time.monotonic()
     expected_host = f"127.0.0.1:{port}"
@@ -131,8 +183,65 @@ def create_app(orch: Orchestrator, token: str, port: int, on_shutdown: Callable[
         return orch.observe(device_id, screenshot=body.screenshot)
 
     @app.post("/devices/{device_id}/act")
-    def act(device_id: str, body: ActBody) -> Receipt:
-        return orch.act(device_id, body.action, wait=body.wait, idempotency_key=body.idempotency_key)
+    def act(device_id: str, body: ActBody, request: Request) -> Receipt:
+        client = _client(request)
+
+        def authorize(action: Action, el: Element | None, fresh: Observation) -> bool:
+            labels = _labels(action, el, fresh)
+            tier = permissions.policy.tier_of(action.kind, fresh.foreground_app, " | ".join(labels) or None)
+            details = {"kind": action.kind} | ({"chars": len(action.text)} if action.text is not None else {})
+            return permissions.require(client, fresh.device_id, tier,
+                                       _describe(action, el, fresh.foreground_app, labels), **details)
+
+        receipt = orch.act(device_id, body.action, wait=body.wait, idempotency_key=body.idempotency_key,
+                           authorize=authorize)
+        permissions.audit.write(event="result", client=client.value, device=receipt.device_id, kind=receipt.kind,
+                                outcome=receipt.outcome, action_id=receipt.action_id)
+        return receipt
+
+    @app.post("/devices/{device_id}/wait")
+    def wait(device_id: str, body: Wait) -> Receipt:
+        return orch.wait(device_id, body)
+
+    @app.post("/devices/{device_id}/install")
+    def install(device_id: str, body: InstallBody, request: Request) -> dict[str, str]:
+        # Check everything before asking: never ask a human to approve something that cannot run. The file is
+        # copied first, so what gets installed is exactly what they approved.
+        d = orch.require(orch.resolve(device_id).id, Capability.INSTALL_APP)
+        staged = orch.stage_apk(d.id, body.apk)
+        name = staged.name
+        source = "".join(c if c.isprintable() else " " for c in body.apk)
+        permissions.require(_client(request), d.id, Tier.SENSITIVE,
+                            f"install the app {quoted(name)}\nFile: {source} ({staged.stat().st_size} bytes)",
+                            kind="install")
+        orch.install_staged(d.id, staged)
+        permissions.audit.write(event="result", client=_client(request).value, device=d.id, kind="install",
+                                outcome="installed", app=name)
+        return {"installed": name}
+
+    @app.post("/devices/{device_id}/record")
+    def record(device_id: str, body: RecordBody) -> dict[str, str]:
+        return {"path": orch.record(device_id, body.seconds)}
+
+    @app.post("/authorize")
+    def authorize_device(body: AuthorizeBody, request: Request) -> dict[str, Any]:
+        d = orch.resolve(body.device)
+        grant = permissions.request_grant(_client(request), d.id, body.minutes)
+        return {"device": grant.device_id, "expires_at": grant.expires_at}
+
+    @app.post("/revoke")
+    def revoke(body: RevokeBody) -> dict[str, int]:
+        device = body.device
+        if device is not None:
+            try:
+                device = orch.resolve(device).id
+            except WinphoneError:
+                pass  # an offline phone's grant can still be revoked by its id
+        return {"revoked": permissions.revoke(device)}
+
+    @app.get("/grants")
+    def grants() -> list[dict[str, Any]]:
+        return [{"device": g.device_id, "expires_at": g.expires_at} for g in permissions.grants()]
 
     @app.get("/devices/{device_id}/apps")
     def apps(device_id: str, all: bool = False) -> list[str]:  # noqa: A002 - the query parameter's name
@@ -150,13 +259,19 @@ def create_app(orch: Orchestrator, token: str, port: int, on_shutdown: Callable[
     def pull_crash(device_id: str, body: PullBody) -> dict[str, str]:
         return {"path": orch.pull_crash_report(device_id, body.name)}
 
+    def human_only(request: Request, what: str) -> None:
+        if _client(request) is not ClientKind.HUMAN:
+            raise PermissionDenied(f"{what} is for the human", hint="Run it with winphone in a console window")
+
     @app.post("/wifi/pair")
-    def pair(body: PairBody) -> dict[str, bool]:
+    def pair(body: PairBody, request: Request) -> dict[str, bool]:
+        human_only(request, "Wi-Fi pairing")
         orch.pair_wifi(body.host, body.port, body.code)
         return {"ok": True}
 
     @app.post("/wifi/connect")
-    def connect_wifi(body: WifiBody) -> DeviceInfo:
+    def connect_wifi(body: WifiBody, request: Request) -> DeviceInfo:
+        human_only(request, "Connecting a phone over Wi-Fi")
         return orch.connect_wifi(body.host, body.port)
 
     @app.post("/shutdown")

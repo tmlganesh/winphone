@@ -17,6 +17,7 @@ from winphone_core.actions import Action, Receipt, Wait
 from winphone_core.errors import DaemonUnavailable, InvalidRequest, error_from_dict
 from winphone_core.models import CapabilityStatus, DeviceInfo, ScreenshotArtifact
 from winphone_core.observation import Observation
+from winphone_core.permissions import CLIENT_HEADER, ClientKind
 from winphone_core.runtime import DaemonInfo, read_info, spawn_detached
 
 _WHY = "Run winphone daemon run to see why"
@@ -25,11 +26,11 @@ _WHY = "Run winphone daemon run to see why"
 Send = Callable[[str, str, bytes | None], tuple[int, bytes]]
 
 
-def http_sender(port: int, token: str, timeout: float) -> Send:
+def http_sender(port: int, token: str, timeout: float, client: ClientKind = ClientKind.AGENT) -> Send:
     def send(method: str, path: str, payload: bytes | None) -> tuple[int, bytes]:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
         try:
-            headers = {"Authorization": f"Bearer {token}"}
+            headers = {"Authorization": f"Bearer {token}", CLIENT_HEADER: client.value}
             if payload is not None:
                 headers["Content-Type"] = "application/json"
             conn.request(method, path, body=payload, headers=headers)
@@ -122,6 +123,27 @@ class DaemonClient:
     def pull_crash(self, device_id: str, name: str) -> str:
         return str(self._call("POST", self._dev(device_id) + "/crashes/pull", {"name": name})["path"])
 
+    def wait(self, device_id: str, wait: Wait) -> Receipt:
+        body = wait.model_dump(mode="json", exclude_none=True)
+        return Receipt.model_validate(self._call("POST", self._dev(device_id) + "/wait", body))
+
+    def install_app(self, device_id: str, apk: str) -> str:
+        """Blocks until the human answers the approval window (installs are always sensitive)."""
+        return str(self._call("POST", self._dev(device_id) + "/install", {"apk": apk})["installed"])
+
+    def record(self, device_id: str, seconds: int) -> str:
+        return str(self._call("POST", self._dev(device_id) + "/record", {"seconds": seconds})["path"])
+
+    def authorize(self, device: str | None, minutes: int = 30) -> dict[str, Any]:
+        """Ask for a grant. Blocks until the human answers the window on the laptop (or it times out)."""
+        return dict(self._call("POST", "/authorize", {"device": device, "minutes": minutes}))
+
+    def revoke(self, device: str | None) -> int:
+        return int(self._call("POST", "/revoke", {"device": device})["revoked"])
+
+    def grants(self) -> list[dict[str, Any]]:
+        return list(self._call("GET", "/grants"))
+
     def pair_wifi(self, host: str, port: int, code: str) -> None:
         self._call("POST", "/wifi/pair", {"host": host, "port": port, "code": code})
 
@@ -132,23 +154,32 @@ class DaemonClient:
         self._call("POST", "/shutdown")
 
 
+def daemon_command() -> list[str]:
+    """How to start winphoned: the frozen winphone.exe takes subcommands directly; Python needs `-m`."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "daemon", "run"]
+    return [sys.executable, "-m", "winphone_cli", "daemon", "run"]
+
+
 def default_spawn() -> None:
-    spawn_detached([sys.executable, "-m", "winphone_cli", "daemon", "run"])
+    spawn_detached(daemon_command())
 
 
-def _try(info: DaemonInfo, call_timeout: float) -> DaemonClient | None:
+def _try(info: DaemonInfo, call_timeout: float, client_kind: ClientKind) -> DaemonClient | None:
     try:
         DaemonClient(http_sender(info.port, info.token, timeout=2)).healthz()
     except DaemonUnavailable:
         return None
-    return DaemonClient(http_sender(info.port, info.token, timeout=call_timeout))
+    return DaemonClient(http_sender(info.port, info.token, timeout=call_timeout, client=client_kind))
 
 
 def connect_daemon(*, autostart: bool = True, spawn: Callable[[], None] = default_spawn,
-                   timeout: float = 15.0, call_timeout: float = 60.0) -> DaemonClient:
-    """A client for the running daemon. A missing, dead or foreign daemon.json starts a fresh daemon."""
+                   timeout: float = 15.0, call_timeout: float = 60.0,
+                   client_kind: ClientKind = ClientKind.AGENT) -> DaemonClient:
+    """A client for the running daemon. A missing, dead or foreign daemon.json starts a fresh daemon.
+    `client_kind` defaults to AGENT, the stricter rules; only an interactive console says HUMAN."""
     info = read_info()
-    if info is not None and (client := _try(info, call_timeout)) is not None:
+    if info is not None and (client := _try(info, call_timeout, client_kind)) is not None:
         return client
     if not autostart:
         raise DaemonUnavailable("winphoned is not running", hint="Run winphone daemon start")
@@ -157,6 +188,6 @@ def connect_daemon(*, autostart: bool = True, spawn: Callable[[], None] = defaul
     while time.monotonic() < deadline:
         time.sleep(0.2)
         info = read_info()
-        if info is not None and (client := _try(info, call_timeout)) is not None:
+        if info is not None and (client := _try(info, call_timeout, client_kind)) is not None:
             return client
     raise DaemonUnavailable("winphoned did not start", hint=_WHY)

@@ -7,3 +7,6 @@ __pycache__/
 .superpowers/
 .env
 dist/
+build/
+npm/winphone/dist/
+*.tgz

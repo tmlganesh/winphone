@@ -29,7 +29,7 @@ REASONS = {
     Capability.LAUNCH_APP: _NEEDS_DDI, Capability.RECORD: _NEEDS_DDI,
     Capability.LIVE_VIEW: "no live view for iPhone from Windows (AirPlay mirroring would need a separate app)",
     Capability.WIRELESS: "iPhone over Wi-Fi is not supported yet",
-    Capability.INSTALL_APP: "Not built yet (Phase 3)",
+    Capability.INSTALL_APP: "installing apps on an iPhone is not built yet (iPhone work resumes later)",
 }
 GO_IOS_CAPABILITIES = {Capability.LIST_APPS, Capability.LOGS, Capability.CRASH_REPORTS}
 

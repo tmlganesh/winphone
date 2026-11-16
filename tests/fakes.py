@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from winphone_core.audit import AuditLog
 from winphone_core.models import (
     Capability,
     CapabilityStatus,
@@ -23,6 +24,7 @@ from winphone_core.models import (
     Transport,
     UiSnapshot,
 )
+from winphone_core.permissions import PermissionManager, SensitivityPolicy
 
 _NODE_DEFAULTS = {
     "text": "", "resource-id": "", "class": "android.widget.TextView", "package": "com.example",
@@ -123,15 +125,21 @@ def make_png(width: int, height: int) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + body
 
 
-def sender_for(tc: TestClient) -> Callable[[str, str, bytes | None], tuple[int, bytes]]:
-    """DaemonClient transport over an in-memory FastAPI app."""
+def sender_for(tc: TestClient, client: str = "human") -> Callable[[str, str, bytes | None], tuple[int, bytes]]:
+    """DaemonClient transport over an in-memory FastAPI app (as a human console unless told otherwise)."""
 
     def send(method: str, path: str, payload: bytes | None) -> tuple[int, bytes]:
-        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        headers = {"X-Winphone-Client": client} | ({"Content-Type": "application/json"} if payload is not None else {})
         r = tc.request(method, path, content=payload, headers=headers)
         return r.status_code, r.content
 
     return send
+
+
+def permissions_for(tmp_path: Path, answer: bool = True) -> PermissionManager:
+    """A permission manager whose 'human' always answers `answer` (tests only)."""
+    return PermissionManager(confirm=lambda message: answer, audit=AuditLog(tmp_path / "audit.jsonl"),
+                             policy=SensitivityPolicy.default())
 
 
 def dev(serial: str, state: DeviceState = DeviceState.ONLINE,
@@ -199,6 +207,15 @@ class FakeAdapter:
     def logs(self, serial: str, lines: int, contains: str | None) -> list[str]:
         found = [x for x in ("boot ok", "MyApp started", "MyApp tap") if not contains or contains.lower() in x.lower()]
         return found[:lines]
+
+    def install_app(self, serial: str, apk: Path) -> None:
+        self.calls.append(("install", apk.name))
+
+    def record(self, serial: str, seconds: int, dest: Path) -> Path:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "rec.mp4").write_bytes(b"mp4")
+        self.calls.append(("record", str(seconds)))
+        return dest / "rec.mp4"
 
     def crash_reports(self, serial: str) -> list[str]:
         return ["MyApp-2026-11-15.ips"]
