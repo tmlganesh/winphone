@@ -1,0 +1,38 @@
+[project]
+name = "winphone-workspace"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["winphone-core", "winphone-android", "winphone-cli"]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "mypy", "httpx"]  # httpx: FastAPI's TestClient only
+
+[tool.uv.workspace]
+members = ["packages/core", "packages/adapters/android", "packages/cli"]
+
+[tool.uv.sources]
+winphone-core = { workspace = true }
+winphone-android = { workspace = true }
+winphone-cli = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+markers = ["android: needs a real Android phone (set WINPHONE_TEST_ANDROID=<serial>)"]
+# Starlette's own test client warns about its httpx backend; nothing in winphone uses it.
+filterwarnings = ["ignore:Using .httpx. with .starlette.testclient. is deprecated"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[[tool.mypy.overrides]]
+module = ["adbutils", "adbutils.*"]
+ignore_missing_imports = true
